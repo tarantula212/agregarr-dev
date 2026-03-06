@@ -119,7 +119,7 @@ searchRouter.get('/search', async (req, res) => {
           // Filter out results with a "reason" field - these are related matches, not direct title matches
           // Direct matches won't have a reason field
           const directMatches = hub.Metadata.filter(
-            (item) => !(item as { reason?: string }).reason
+            (item) => ["movie", "show"].includes((item as { type?: string }).type ?? "")
           );
           rawResults.push(...directMatches);
         }

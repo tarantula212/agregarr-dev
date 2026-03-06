@@ -10,7 +10,7 @@ import type {
 import { OverlayTemplate } from '@server/entity/OverlayTemplate';
 import { overlayTemplateRenderer } from '@server/lib/overlays/OverlayTemplateRenderer';
 import { presetTemplateService } from '@server/lib/overlays/PresetTemplates';
-import { getTmdbLanguage } from '@server/lib/settings';
+import { getSettings, getTmdbLanguage } from '@server/lib/settings';
 import logger from '@server/logger';
 import { isAuthenticated } from '@server/middleware/auth';
 import { Router } from 'express';
@@ -126,11 +126,137 @@ async function fetchPreviewPosterMetadata(
   };
 }
 
+/**
+ * Get list of available preivew posters
+ */
+async function getPreviewPosters(
+  filters: { libraryId?: number } = {}
+): Promise<PreviewPosterInfo[]> {
+  const settings = getSettings();
+  return settings.overlays?.defaultPosterSource === 'local'
+    ? await getLocalPlexBasePosters()
+    : await getBundledPreviewPosters();
+
+  async function getLocalPlexBasePosters(): Promise<PreviewPosterInfo[]> {
+    // Get local posters from PlexBasePosterManager
+    // We can use these for previews if the user has selected "local" as their default poster source
+    const postersDir = path.join(process.cwd(), 'config', 'plex-base-posters');
+
+    // read files from posterDir nested up to 2 levels deep (to support library subfolders) and filter for image files
+    const files = await fsPromises.readdir(postersDir, { withFileTypes: true });
+    const posterFiles: PreviewPosterInfo[] = [];
+    for (const file of files) {
+      if (!file.isDirectory()) {
+        continue;
+      }
+      if (file.name === 'orphaned') {
+        continue;
+      }
+
+      const libId = parseInt(file.name.split('-')[1]);
+      if (filters.libraryId && libId !== filters.libraryId) {
+        continue;
+      }
+
+      const libDir = path.join(postersDir, file.name);
+      const libDirFiles = await fsPromises.readdir(libDir, {
+        withFileTypes: true,
+      });
+      for (const libDirFile of libDirFiles) {
+        if (!libDirFile.isDirectory()) {
+          continue;
+        }
+
+        const type: 'movie' | 'tv' = libDirFile.name
+          .toLowerCase()
+          .includes('movie')
+          ? 'movie'
+          : 'tv';
+        const tmdbId: number = libDirFile.name.match(/tmdb-(\d+)/)?.[1]
+          ? parseInt(libDirFile.name.match(/tmdb-(\d+)/)?.[1]!)
+          : 0;
+        const mediaDir = path.join(libDir, libDirFile.name);
+
+        const mediaDirFiles = await fsPromises.readdir(mediaDir, {
+          withFileTypes: true,
+        });
+
+        for (const mediaDirFile of mediaDirFiles) {
+          if (!mediaDirFile.isFile()) {
+            continue;
+          }
+
+          if (!mediaDirFile.name.startsWith('poster')) {
+            continue;
+          }
+
+          posterFiles.push({
+            id: `${type}_${tmdbId}`,
+            type,
+            tmdbId,
+            filename: path.join(libDirFile.name, mediaDirFile.name),
+            filepath: path.join(mediaDir, mediaDirFile.name),
+            url: `/plex-base-posters/${file.name}/${libDirFile.name}/${mediaDirFile.name}`,
+          });
+        }
+      }
+    }
+
+    return posterFiles;
+  }
+
+  async function getBundledPreviewPosters(): Promise<PreviewPosterInfo[]> {
+    const postersDir = path.join(process.cwd(), 'public', 'preview-posters');
+
+    const files = await fsPromises.readdir(postersDir);
+    const posterFiles = files.filter(
+      (file) =>
+        file.endsWith('.jpg') || file.endsWith('.png') || file.endsWith('.jpeg')
+    );
+
+    const posters: PreviewPosterInfo[] = posterFiles
+      .map((filename) => {
+        // Parse filename: movie_123.jpg or tv_456.jpg
+        const match = filename.match(/^(movie|tv)_(\d+)\.(jpg|jpeg|png)$/);
+        if (!match) return null;
+
+        const [, type, tmdbIdStr] = match;
+        const tmdbId = parseInt(tmdbIdStr);
+
+        return {
+          id: `${type}_${tmdbId}`,
+          type: type as 'movie' | 'tv',
+          tmdbId,
+          filename,
+          filepath: path.join(postersDir, filename),
+          url: `/preview-posters/${filename}`,
+        };
+      })
+      .filter((poster): poster is PreviewPosterInfo => poster !== null);
+
+    return posters;
+  }
+}
+
+async function getRandomPreviewPoster(
+  filters: { libraryId?: number } = {}
+): Promise<PreviewPosterInfo | null> {
+  const previewPosters = await getPreviewPosters(filters);
+
+  if (previewPosters.length === 0) {
+    return null;
+  }
+
+  const randomIndex = Math.floor(Math.random() * previewPosters.length);
+  return previewPosters[randomIndex];
+}
+
 interface PreviewPosterInfo {
   id: string;
   type: 'movie' | 'tv';
   tmdbId: number;
   filename: string;
+  filepath: string;
   url: string;
 }
 
@@ -159,35 +285,15 @@ router.use(isAuthenticated());
 // GET /api/v1/overlay-templates/preview-posters - List available preview posters
 router.get('/preview-posters', async (_req, res, next) => {
   try {
-    const postersDir = path.join(process.cwd(), 'public', 'preview-posters');
-
-    const files = await fsPromises.readdir(postersDir);
-    const posterFiles = files.filter(
-      (file) =>
-        file.endsWith('.jpg') || file.endsWith('.png') || file.endsWith('.jpeg')
-    );
-
-    const posters: PreviewPosterInfo[] = posterFiles
-      .map((filename) => {
-        // Parse filename: movie_123.jpg or tv_456.jpg
-        const match = filename.match(/^(movie|tv)_(\d+)\.(jpg|jpeg|png)$/);
-        if (!match) return null;
-
-        const [, type, tmdbIdStr] = match;
-        const tmdbId = parseInt(tmdbIdStr);
-
-        return {
-          id: `${type}_${tmdbId}`,
-          type: type as 'movie' | 'tv',
-          tmdbId,
-          filename,
-          url: `/preview-posters/${filename}`,
-        };
-      })
-      .filter((poster): poster is PreviewPosterInfo => poster !== null);
-
+    const posters: PreviewPosterInfo[] = await getPreviewPosters();
     return res.status(200).json({
-      posters,
+      posters: posters.map((poster) => ({
+        id: poster.id,
+        type: poster.type,
+        tmdbId: poster.tmdbId,
+        filename: poster.filename,
+        url: poster.url,
+      })),
       count: posters.length,
     });
   } catch (error) {
@@ -705,34 +811,21 @@ router.get('/:id/preview', async (req, res, next) => {
       });
     }
 
-    // Get list of preview posters
-    const postersDir = path.join(process.cwd(), 'public', 'preview-posters');
-    const posterFiles = await fsPromises.readdir(postersDir);
-    const jpgFiles = posterFiles.filter(
-      (f) =>
-        f.endsWith('.jpg') && (f.startsWith('movie_') || f.startsWith('tv_'))
-    );
-
-    if (jpgFiles.length === 0) {
+    // Pick a random poster
+    const randomPoster = await getRandomPreviewPoster();
+    if (!randomPoster) {
       return res.status(500).json({
-        error: 'No preview posters available',
+        error: 'Preview poster not found',
       });
     }
-
-    // Pick a random poster
-    const randomPoster = jpgFiles[Math.floor(Math.random() * jpgFiles.length)];
-    const posterPath = path.join(postersDir, randomPoster);
-
     // Load the poster image
-    const posterBuffer = await fsPromises.readFile(posterPath);
-
-    // Extract TMDB ID and media type from filename (e.g., "movie_100402.jpg")
-    const match = randomPoster.match(/^(movie|tv)_(\d+)\.jpg$/);
-    const mediaType = match ? (match[1] as 'movie' | 'tv') : 'movie';
-    const tmdbId = match ? parseInt(match[2]) : 0;
+    const posterBuffer = await fsPromises.readFile(randomPoster.filepath);
 
     // Fetch real TMDB metadata and ratings using shared helper
-    const tmdbData = await fetchPreviewPosterMetadata(mediaType, tmdbId);
+    const tmdbData = await fetchPreviewPosterMetadata(
+      randomPoster.type,
+      randomPoster.tmdbId
+    );
 
     // Build render context with real TMDB data + comprehensive placeholder data
     // Use fallback values to ensure all fields are always populated for previews
@@ -746,7 +839,8 @@ router.get('/:id/preview', async (req, res, next) => {
       rtCertifiedFresh: true,
       rtVerifiedHot: true,
       studio: tmdbData.studio || 'Warner Bros.',
-      mediaType: mediaType === 'movie' ? ('movie' as const) : ('show' as const),
+      mediaType:
+        randomPoster.type === 'movie' ? ('movie' as const) : ('show' as const),
 
       // Ratings (additional)
       imdbTop250Rank: 42,
@@ -844,9 +938,10 @@ router.get('/:id/preview', async (req, res, next) => {
 // POST /api/v1/overlay-templates/combined-preview - Generate preview with multiple overlays
 router.post('/combined-preview', async (req, res, next) => {
   try {
-    const { templateIds, contextId } = req.body as {
+    const { templateIds, contextId, libraryId } = req.body as {
       templateIds: number[];
       contextId?: string;
+      libraryId?: number; // Optional library ID for context scoping (if needed in the future)
     };
 
     if (
@@ -896,26 +991,15 @@ router.post('/combined-preview', async (req, res, next) => {
       .map((id) => templates.find((t) => t.id === id))
       .filter((t): t is OverlayTemplate => t !== undefined);
 
-    // Get list of preview posters
-    const postersDir = path.join(process.cwd(), 'public', 'preview-posters');
-    const posterFiles = await fsPromises.readdir(postersDir);
-    const jpgFiles = posterFiles.filter(
-      (f) =>
-        f.endsWith('.jpg') && (f.startsWith('movie_') || f.startsWith('tv_'))
-    );
-
-    if (jpgFiles.length === 0) {
+    // Fetch a random preview poster
+    const randomPoster = await getRandomPreviewPoster({ libraryId });
+    if (!randomPoster) {
       return res.status(500).json({
         error: 'No preview posters available',
       });
     }
-
-    // Pick a random poster
-    const randomPoster = jpgFiles[Math.floor(Math.random() * jpgFiles.length)];
-    const posterPath = path.join(postersDir, randomPoster);
-
     // Load the poster image
-    let posterBuffer = await fsPromises.readFile(posterPath);
+    let posterBuffer = await fsPromises.readFile(randomPoster.filepath);
 
     // Check again after I/O operation
     if (!isLatestRequest()) {
@@ -926,13 +1010,11 @@ router.post('/combined-preview', async (req, res, next) => {
       return res.status(200).json({ message: 'Request superseded' });
     }
 
-    // Extract TMDB ID and media type from filename
-    const match = randomPoster.match(/^(movie|tv)_(\d+)\.jpg$/);
-    const mediaType = match ? (match[1] as 'movie' | 'tv') : 'movie';
-    const tmdbId = match ? parseInt(match[2]) : 0;
-
     // Fetch real TMDB metadata and ratings using shared helper
-    const tmdbData = await fetchPreviewPosterMetadata(mediaType, tmdbId);
+    const tmdbData = await fetchPreviewPosterMetadata(
+      randomPoster.type,
+      randomPoster.tmdbId
+    );
 
     // Check again after API calls
     if (!isLatestRequest()) {
@@ -958,7 +1040,8 @@ router.post('/combined-preview', async (req, res, next) => {
       rtCertifiedFresh: true,
       rtVerifiedHot: true,
       studio: tmdbData.studio || 'Warner Bros.',
-      mediaType: mediaType === 'movie' ? ('movie' as const) : ('show' as const),
+      mediaType:
+        randomPoster.type === 'movie' ? ('movie' as const) : ('show' as const),
 
       // Ratings (additional)
       imdbTop250Rank: 42,

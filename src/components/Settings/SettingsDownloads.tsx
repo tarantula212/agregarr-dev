@@ -852,7 +852,7 @@ const SettingsDownloads = ({ onComplete }: SettingsDownloadsProps) => {
               {intl.formatMessage(messages.youtubeCookiesNotFoundMessage, {
                 cookiesPath: (
                   <code className="rounded bg-stone-700 px-1 py-0.5 font-mono text-sm">
-                    youtube-cookies.txt
+                    youtube/cookies.txt
                   </code>
                 ),
               })}

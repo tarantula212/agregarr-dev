@@ -3845,7 +3845,7 @@ const CollectionFormConfigForm = ({
                                                   {
                                                     cookiesPath: (
                                                       <code className="bg-yellow-950 rounded px-1 py-0.5 font-mono">
-                                                        youtube-cookies.txt
+                                                        youtube/cookies.txt
                                                       </code>
                                                     ),
                                                   }

@@ -108,7 +108,8 @@ async function downloadWithYtDlp(
     const cookiesPath = path.join(
       process.cwd(),
       'config',
-      'youtube-cookies.txt'
+      'youtube',
+      'cookies.txt'
     );
     try {
       fs.accessSync(cookiesPath);

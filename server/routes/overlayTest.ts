@@ -58,11 +58,16 @@ overlayTestRouter.post('/', async (req, res) => {
     }
 
     // Skip episodes and seasons
-    if (item.type === 'episode' || item.type === 'season') {
+    if (item.type === 'episode') {
       return res.status(400).json({
         error:
-          'Overlays only apply to movies and shows, not episodes or seasons',
+          'Overlays only apply to movies, shows and seasons, not episodes',
       });
+    }
+
+
+    if (item.parentRatingKey) {
+      item.parent = item.parentRatingKey ? await plexApi.getMetadata(item.parentRatingKey) : undefined;
     }
 
     // Get library information
@@ -135,13 +140,14 @@ overlayTestRouter.post('/', async (req, res) => {
     });
 
     // Derive actual media type from item.type
-    const actualMediaType: 'movie' | 'show' =
-      item.type === 'movie' ? 'movie' : 'show';
+    const actualMediaType: 'movie' | 'show' | 'season' =
+      item.type === 'movie' ? 'movie' : item.type === 'season' ? 'season' : 'show';
 
     // Extract TMDB ID from item GUIDs
     let tmdbId: number | undefined;
-    if (item.Guid && Array.isArray(item.Guid)) {
-      const tmdbGuid = item.Guid.find((g) => g.id?.includes('tmdb://'));
+    const guids = item.type === 'season' ? item.parent?.Guid : item.Guid
+    if (guids && Array.isArray(guids)) {
+      const tmdbGuid = guids.find((g) => g.id?.includes('tmdb://'));
       if (tmdbGuid) {
         const match = tmdbGuid.id.match(/tmdb:\/\/(\d+)/);
         if (match) {
@@ -232,7 +238,7 @@ overlayTestRouter.post('/', async (req, res) => {
     if (tmdbId) {
       const releaseDateInfo = await fetchReleaseDateInfo(
         tmdbId,
-        actualMediaType
+        actualMediaType === 'season' ? "show" : actualMediaType
       );
 
       if (releaseDateInfo) {
@@ -294,7 +300,7 @@ overlayTestRouter.post('/', async (req, res) => {
     if (tmdbId) {
       monitoringContext = await checkMonitoringStatus(
         tmdbId,
-        actualMediaType,
+        actualMediaType === "season" ? "show" : actualMediaType,
         undefined,
         undefined
       );
@@ -478,6 +484,7 @@ overlayTestRouter.post('/', async (req, res) => {
         type: item.type,
         libraryId,
         libraryName,
+        parent: item.parent,
       },
       templates: templateResults,
       context: allContext,

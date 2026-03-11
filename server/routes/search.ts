@@ -1,4 +1,4 @@
-import type { PlexLibraryItem } from '@server/api/plexapi';
+import type { PlexLibraryItem, PlexMetadata } from '@server/api/plexapi';
 import PlexAPI from '@server/api/plexapi';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
@@ -67,6 +67,7 @@ interface PlexSearchResult {
   thumb?: string;
   libraryId: string;
   libraryName: string;
+  children?: PlexMetadata[];
 }
 
 /**
@@ -118,8 +119,8 @@ searchRouter.get('/search', async (req, res) => {
         if (hub.Metadata) {
           // Filter out results with a "reason" field - these are related matches, not direct title matches
           // Direct matches won't have a reason field
-          const directMatches = hub.Metadata.filter(
-            (item) => ["movie", "show"].includes((item as { type?: string }).type ?? "")
+          const directMatches = hub.Metadata.filter((item) =>
+            ['movie', 'show'].includes((item as { type?: string }).type ?? '')
           );
           rawResults.push(...directMatches);
         }
@@ -167,6 +168,12 @@ searchRouter.get('/search', async (req, res) => {
         ? `/api/v1/plex/image?path=${encodeURIComponent(thumbPath)}`
         : undefined;
 
+      // add seasons info
+      const children =
+        item.type === 'show'
+          ? await plexApi.getChildrenMetadata(item.ratingKey)
+          : undefined;
+
       filteredResults.push({
         ratingKey: item.ratingKey,
         title: item.title,
@@ -175,6 +182,7 @@ searchRouter.get('/search', async (req, res) => {
         thumb: proxyThumbUrl,
         libraryId,
         libraryName,
+        children,
       });
 
       // Stop if we have enough results

@@ -16,9 +16,11 @@ interface ExtendedPlexAPI extends NodePlexAPI {
 
 export interface PlexLibraryItem {
   ratingKey: string;
+  parent?: PlexMetadata;
   parentRatingKey?: string;
   grandparentRatingKey?: string;
   title: string;
+  parentTitle?: string;
   guid: string;
   parentGuid?: string;
   grandparentGuid?: string;
@@ -27,6 +29,7 @@ export interface PlexLibraryItem {
   lastViewedAt?: number;
   viewCount?: number;
   year?: number;
+  parentYear?: number;
   originallyAvailableAt?: string; // Original release date (YYYY-MM-DD format)
   index?: number;
   parentIndex?: number;
@@ -62,10 +65,12 @@ interface PlexLibrariesResponse {
 
 export interface PlexMetadata {
   ratingKey: string;
+  parent?: PlexMetadata;
   parentRatingKey?: string;
   guid: string;
   type: 'movie' | 'show' | 'season' | 'episode';
   title: string;
+  year?: number;
   thumb?: string;
   editionTitle?: string;
   Guid: {
@@ -379,11 +384,49 @@ class PlexAPI {
     }
   }
 
+  public async getAllLibraryContents(
+    libraryId: string,
+    type: 'movie' | 'show' | 'season'
+  ): Promise<PlexLibraryItem[]> {
+    const results: PlexLibraryItem[] = [];
+    let offset = 0;
+    const pageSize = 50;
+    let hasMore = true;
+    while (hasMore) {
+      const response = await this.getLibraryContents(libraryId, {
+        offset,
+        size: pageSize,
+        type,
+      });
+
+      results.push(...response.items);
+
+      if (offset + pageSize >= response.totalSize) {
+        hasMore = false;
+      }
+
+      offset += pageSize;
+    }
+
+    return results;
+  }
+
   public async getLibraryContents(
     id: string,
-    { offset = 0, size = 50 }: { offset?: number; size?: number } = {}
+    {
+      offset = 0,
+      size = 50,
+      type,
+    }: {
+      offset?: number;
+      size?: number;
+      type?: 'movie' | 'show' | 'season';
+    } = {}
   ): Promise<{ totalSize: number; items: PlexLibraryItem[] }> {
-    const uri = `/library/sections/${id}/all?includeGuids=1`;
+    const typeId = type === 'movie' ? 1 : type === 'show' ? 2 : 3;
+    const uri = `/library/sections/${id}/all?includeGuids=1&includeChildren=1${type ? `&type=${typeId}` : ''
+      }`;
+
     const headers = {
       'X-Plex-Container-Start': `${offset}`,
       'X-Plex-Container-Size': `${size}`,
@@ -407,8 +450,7 @@ class PlexAPI {
     options: { includeChildren?: boolean } = {}
   ): Promise<PlexMetadata> {
     const response = await this.plexClient.query<PlexMetadataResponse>(
-      `/library/metadata/${key}${
-        options.includeChildren ? '?includeChildren=1' : ''
+      `/library/metadata/${key}${options.includeChildren ? '?includeChildren=1' : ''
       }`
     );
 
@@ -589,9 +631,8 @@ class PlexAPI {
     mediaType: 'movie' | 'show'
   ): Promise<PlexLibraryItem[]> {
     const response = await this.plexClient.query<PlexLibraryResponse>({
-      uri: `/library/sections/${id}/all?type=${
-        mediaType === 'show' ? '2' : '1'
-      }&sort=addedAt%3Adesc&addedAt>>=${Math.floor(options.addedAt / 1000)}`,
+      uri: `/library/sections/${id}/all?type=${mediaType === 'show' ? '2' : '1'
+        }&sort=addedAt%3Adesc&addedAt>>=${Math.floor(options.addedAt / 1000)}`,
       extraHeaders: {
         'X-Plex-Container-Start': `0`,
         'X-Plex-Container-Size': `500`,
@@ -702,8 +743,7 @@ class PlexAPI {
       });
       // Throw error to distinguish from "collection not found"
       throw new Error(
-        `API error getting collection metadata: ${
-          error instanceof Error ? error.message : 'Unknown error'
+        `API error getting collection metadata: ${error instanceof Error ? error.message : 'Unknown error'
         }`
       );
     }
@@ -905,16 +945,15 @@ class PlexAPI {
         libraryKey,
         mediaType,
         typeParam: mediaType === 'tv' ? 2 : 1,
-        createUrl: `/library/collections?type=${
-          mediaType === 'tv' ? 2 : 1
-        }&title=${encodeURIComponent(title)}&smart=0&sectionId=${libraryKey}`,
+        createUrl: `/library/collections?type=${mediaType === 'tv' ? 2 : 1
+          }&title=${encodeURIComponent(title)}&smart=0&sectionId=${libraryKey}`,
         error:
           error instanceof Error
             ? {
-                message: error.message,
-                stack: error.stack,
-                name: error.name,
-              }
+              message: error.message,
+              stack: error.stack,
+              name: error.name,
+            }
             : error,
       });
       return null;
@@ -1534,8 +1573,8 @@ class PlexAPI {
       const queryString =
         updatedLabels.length > 0
           ? Object.entries(params)
-              .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
-              .join('&')
+            .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+            .join('&')
           : 'label[0].tag.tag-=';
 
       const editUrl = `/library/metadata/${ratingKey}?${queryString}`;
@@ -2318,9 +2357,8 @@ class PlexAPI {
             }[];
           };
         }>({
-          uri: `/library/sections/${libraryId}/all?includeGuids=1${
-            type ? `&type=${type}` : ''
-          }`,
+          uri: `/library/sections/${libraryId}/all?includeGuids=1${type ? `&type=${type}` : ''
+            }`,
           extraHeaders: {
             'X-Plex-Container-Start': `${offset}`,
             'X-Plex-Container-Size': `${pageSize}`,
@@ -2943,8 +2981,8 @@ class PlexAPI {
         uri,
         extraHeaders: limit
           ? {
-              'X-Plex-Container-Size': `${limit}`,
-            }
+            'X-Plex-Container-Size': `${limit}`,
+          }
           : undefined,
       });
 
@@ -2990,8 +3028,8 @@ class PlexAPI {
         uri,
         extraHeaders: limit
           ? {
-              'X-Plex-Container-Size': `${limit}`,
-            }
+            'X-Plex-Container-Size': `${limit}`,
+          }
           : undefined,
       });
 

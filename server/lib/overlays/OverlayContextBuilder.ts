@@ -214,7 +214,7 @@ const rtInflightRequests = new Map<string, Promise<RTRating | null>>();
  */
 export async function buildRenderContext(
   item: PlexLibraryItem,
-  mediaType: 'movie' | 'show',
+  mediaType: 'movie' | 'show' | 'season',
   isPlaceholder = false,
   maintainerrCollections?: MaintainerrCollection[],
   preloadedImdbRatings?: Map<string, number | null>,
@@ -241,9 +241,10 @@ export async function buildRenderContext(
   let tmdbId: number | undefined;
   let imdbIdFromGuid: string | undefined;
 
-  if (item.Guid && Array.isArray(item.Guid)) {
+  const guid = mediaType === 'season' ? item.parent?.Guid : item.Guid;
+  if (guid && Array.isArray(guid)) {
     // Extract TMDB ID
-    const tmdbGuid = item.Guid.find((g) => g.id?.includes('tmdb://'));
+    const tmdbGuid = guid.find((g) => g.id?.includes('tmdb://'));
     if (tmdbGuid) {
       const match = tmdbGuid.id.match(/tmdb:\/\/(\d+)/);
       if (match) {
@@ -252,7 +253,7 @@ export async function buildRenderContext(
     }
 
     // Extract IMDb ID directly from Plex GUID (same as prefetch does)
-    const imdbGuid = item.Guid.find((g) => g.id?.startsWith('imdb://'));
+    const imdbGuid = guid.find((g) => g.id?.startsWith('imdb://'));
     if (imdbGuid) {
       imdbIdFromGuid = imdbGuid.id.replace('imdb://', '');
     }
@@ -342,7 +343,7 @@ export async function buildRenderContext(
         try {
           const imdbClient = getImdbClient();
           const imdbMediaType: 'movie' | 'tv' =
-            mediaType === 'show' ? 'tv' : 'movie';
+            mediaType === 'movie' ? 'movie' : 'tv';
           const top250Result = await imdbClient.checkTop250(
             imdbId,
             imdbMediaType

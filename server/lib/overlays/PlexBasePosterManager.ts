@@ -76,12 +76,15 @@ class PlexBasePosterManager {
     // Cache miss - create Promise for TMDB API call
     // Store Promise immediately to coalesce concurrent requests
     // Wrap with error handling to remove failed entries from cache
-    const fetchPromise = this.fetchTmdbPosterUrl(tmdbId, mediaType, language)
-      .catch((error) => {
-        // Remove failed entry so future calls can retry
-        this.tmdbUrlCache.delete(cacheKey);
-        throw error;
-      });
+    const fetchPromise = this.fetchTmdbPosterUrl(
+      tmdbId,
+      mediaType,
+      language
+    ).catch((error) => {
+      // Remove failed entry so future calls can retry
+      this.tmdbUrlCache.delete(cacheKey);
+      throw error;
+    });
 
     this.tmdbUrlCache.set(cacheKey, fetchPromise);
 
@@ -285,7 +288,10 @@ class PlexBasePosterManager {
   /**
    * Store TMDB poster in cache
    */
-  private async storeTmdbCachedPoster(posterUrl: string, buffer: Buffer): Promise<void> {
+  private async storeTmdbCachedPoster(
+    posterUrl: string,
+    buffer: Buffer
+  ): Promise<void> {
     const filename = this.getTmdbCacheFilename(posterUrl);
     const cachePath = path.join(TMDB_POSTER_CACHE_DIR, filename);
 
@@ -385,9 +391,8 @@ class PlexBasePosterManager {
     } else {
       // Otherwise, build full URL from relative path
       const settings = getSettings();
-      const baseUrl = `${settings.plex.useSsl ? 'https' : 'http'}://${
-        settings.plex.ip
-      }:${settings.plex.port}`;
+      const baseUrl = `${settings.plex.useSsl ? 'https' : 'http'}://${settings.plex.ip
+        }:${settings.plex.port}`;
 
       // Build full URL with token
       fullUrl = `${baseUrl}${downloadPath}?X-Plex-Token=${plexApi['plexToken']}`;
@@ -490,6 +495,7 @@ class PlexBasePosterManager {
    * Automatically creates folder if it doesn't exist
    */
   private async scanLocalPoster(
+    posterName: string,
     localPosterPath: string,
     previousModTime: number | undefined
   ): Promise<{
@@ -522,7 +528,7 @@ class PlexBasePosterManager {
     }
 
     // Find image file in directory
-    const imageFilePath = await findImageFile(localPosterPath);
+    const imageFilePath = await findImageFile(localPosterPath, posterName);
 
     if (!imageFilePath) {
       logger.debug('No local poster file found', {
@@ -630,7 +636,11 @@ class PlexBasePosterManager {
 
       // Get TMDB poster URL using cached lookup
       const language = await getTmdbLanguage(libraryId);
-      const posterUrl = await this.getTmdbPosterUrl(tmdbId, mediaType, language);
+      const posterUrl = await this.getTmdbPosterUrl(
+        tmdbId,
+        mediaType,
+        language
+      );
 
       if (!posterUrl) {
         throw new Error('No TMDB poster available');
@@ -704,8 +714,8 @@ class PlexBasePosterManager {
       const localPosterPath = await this.buildLocalPosterPath(
         libraryId,
         libraryName,
-        item.title,
-        item.year,
+        item.type === 'season' ? item.parent?.title ?? item.title : item.title,
+        item.type === 'season' ? item.parent?.year ?? item.year : item.year,
         tmdbId
       );
 
@@ -716,6 +726,9 @@ class PlexBasePosterManager {
 
       // Scan for local poster
       const localPosterResult = await this.scanLocalPoster(
+        item.type === 'season'
+          ? `Season${String(item.index).padStart(2, '0')}`
+          : 'poster',
         localPosterPath,
         metadata.localPosterModifiedTime
       );
@@ -894,12 +907,19 @@ class PlexBasePosterManager {
         itemType: item.type,
         tmdbId: resolvedTmdbId,
         mediaType,
-        endpoint: mediaType === 'movie' ? `/movie/${resolvedTmdbId}` : `/tv/${resolvedTmdbId}`,
+        endpoint:
+          mediaType === 'movie'
+            ? `/movie/${resolvedTmdbId}`
+            : `/tv/${resolvedTmdbId}`,
       });
 
       // Get TMDB poster URL using cached lookup
       const language = await getTmdbLanguage(libraryId);
-      const posterUrl = await this.getTmdbPosterUrl(resolvedTmdbId, mediaType, language);
+      const posterUrl = await this.getTmdbPosterUrl(
+        resolvedTmdbId,
+        mediaType,
+        language
+      );
 
       if (!posterUrl) {
         throw new Error('No TMDB poster available');

@@ -46,6 +46,7 @@ const TestItemModal: React.FC<TestItemModalProps> = ({ isOpen, onClose }) => {
   const [selectedItem, setSelectedItem] = useState<PlexSearchResult | null>(
     null
   );
+  const [activeRatingKey, setActiveRatingKey] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<OverlayTestResult | null>(
     null
   );
@@ -87,17 +88,17 @@ const TestItemModal: React.FC<TestItemModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
-  const handleTest = async () => {
-    if (!selectedItem) return;
-
+  const handleTest = async (ratingKey: string) => {
     setIsTesting(true);
     setStage('results');
+    setActiveRatingKey(ratingKey);
+    setTestResults(null);
 
     try {
       const { data } = await axios.post<OverlayTestResult>(
         '/api/v1/overlay-test',
         {
-          ratingKey: selectedItem.ratingKey,
+          ratingKey,
         }
       );
       setTestResults(data);
@@ -125,6 +126,7 @@ const TestItemModal: React.FC<TestItemModalProps> = ({ isOpen, onClose }) => {
     setStage('search');
     setTestResults(null);
     setExpandedTemplate(null);
+    setActiveRatingKey(null);
   };
 
   const handleClose = () => {
@@ -134,7 +136,28 @@ const TestItemModal: React.FC<TestItemModalProps> = ({ isOpen, onClose }) => {
     setSelectedItem(null);
     setTestResults(null);
     setExpandedTemplate(null);
+    setActiveRatingKey(null);
     onClose();
+  };
+
+  const renderSelect = () => {
+    if (!selectedItem || selectedItem.type !== 'show') return;
+
+    return (
+      <select
+        value={activeRatingKey ?? ''}
+        onChange={(e) => {
+          handleTest(e.target.value);
+        }}
+      >
+        <option value={selectedItem.ratingKey}>Show</option>
+        {(selectedItem.children || []).map((child) => (
+          <option key={child.ratingKey} value={child.ratingKey}>
+            {child.title}
+          </option>
+        ))}
+      </select>
+    );
   };
 
   return (
@@ -153,6 +176,7 @@ const TestItemModal: React.FC<TestItemModalProps> = ({ isOpen, onClose }) => {
         title={
           stage === 'search' ? 'Test Item - Search' : 'Test Item - Results'
         }
+        subTitle={stage === 'results' ? renderSelect() : null}
         customMaxWidth="sm:max-w-6xl"
         onCancel={stage === 'results' ? handleBack : handleClose}
         cancelText={stage === 'results' ? 'Back to Search' : undefined}
@@ -231,7 +255,9 @@ const TestItemModal: React.FC<TestItemModalProps> = ({ isOpen, onClose }) => {
                   </Button>
                   <Button
                     buttonType="primary"
-                    onClick={handleTest}
+                    onClick={() =>
+                      selectedItem && handleTest(selectedItem?.ratingKey)
+                    }
                     disabled={!selectedItem || isTesting}
                   >
                     {intl.formatMessage(messages.testOverlay)}
@@ -265,9 +291,23 @@ const TestItemModal: React.FC<TestItemModalProps> = ({ isOpen, onClose }) => {
                   <div className="rounded-lg bg-stone-800 p-3 text-sm text-stone-400">
                     <p>
                       <strong className="text-white">
-                        {testResults.item.title}
+                        {testResults.item.parent?.title ||
+                          testResults.item.title}
                       </strong>{' '}
-                      {testResults.item.year && `(${testResults.item.year})`}
+                      {(testResults.item.parent?.year ||
+                        testResults.item.year) &&
+                        `(${
+                          testResults.item.parent?.year || testResults.item.year
+                        })`}
+                      {testResults.item.parent && (
+                        <>
+                          {' - '}
+                          <strong className="text-white">
+                            {testResults.item.parent?.title ||
+                              testResults.item.title}
+                          </strong>
+                        </>
+                      )}
                     </p>
                     <p>
                       {intl.formatMessage(messages.library, {

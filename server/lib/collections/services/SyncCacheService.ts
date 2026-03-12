@@ -72,7 +72,7 @@ export class SyncCacheService {
   public clear(): void {
     this.overseerrRequestsCache = [];
     this.libraryItemsCache = {};
-    this.tmdbFranchiseCache.flushAll();
+    // this.tmdbFranchiseCache.flushAll();
     this.placeholderDiscoveryCacheTv = [];
     this.placeholderDiscoveryCacheMovies = [];
     this.isInitialized = false;

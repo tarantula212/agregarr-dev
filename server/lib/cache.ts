@@ -13,6 +13,7 @@ export type AvailableCacheIds =
   | 'imdb-ratings' // Per-item IMDb ratings with adaptive TTL based on content age
   | 'rt-ratings' // Per-item RT ratings with adaptive TTL based on content age
   | 'tmdb-releases' // Per-item TMDB release date info with adaptive TTL
+  | 'tmdb-franchise' // Per-item TMDB franchise info with adaptive TTL
   | 'flixpatrol'
   | 'github'
   | 'plexguid'
@@ -160,6 +161,13 @@ class CacheManager {
       'TMDB Release Dates (Adaptive TTL)',
       {
         stdTtl: 86400 * 7, // 7 day default (individual items use explicit TTL)
+      }
+    ),
+    'tmdb-franchise': new Cache(
+      'tmdb-franchise',
+      'TMDB Franchise Data (Adaptive TTL)',
+      {
+        stdTtl: 86400 * 2, // 2 day default (individual items use explicit TTL)
       }
     ),
     flixpatrol: new Cache('flixpatrol', 'FlixPatrol API', {

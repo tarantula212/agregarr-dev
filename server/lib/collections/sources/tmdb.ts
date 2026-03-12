@@ -1545,7 +1545,7 @@ export class TmdbCollectionSync extends BaseCollectionSync<'tmdb'> {
 
       try {
         // Check cache first (48h TTL)
-        let movieDetails = syncCacheService.getTmdbMovieDetails(tmdbId);
+        let movieDetails = await syncCacheService.getTmdbMovieDetails(tmdbId);
 
         if (movieDetails) {
           cacheHits++;
@@ -1558,7 +1558,7 @@ export class TmdbCollectionSync extends BaseCollectionSync<'tmdb'> {
           movieApiCalls++;
 
           // Cache the result with 48h TTL
-          syncCacheService.setTmdbMovieDetails(tmdbId, movieDetails);
+          await syncCacheService.setTmdbMovieDetails(tmdbId, movieDetails);
         }
 
         // Mark this movie as processed

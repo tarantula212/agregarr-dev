@@ -375,7 +375,7 @@ export async function buildRenderContext(
         const rtCache = cacheManager.getCache('rt-ratings');
 
         // Check cache first
-        const cachedRt = rtCache.data.get<string | RTRating>(rtCacheKey);
+        const cachedRt = await rtCache.data.get<string | RTRating>(rtCacheKey);
         if (cachedRt !== undefined) {
           if (cachedRt === RT_NULL_SENTINEL) {
             // Cached "no rating" - skip API call
@@ -453,7 +453,7 @@ export async function buildRenderContext(
                 context.rtCertifiedFresh =
                   rtRating.criticsRating === 'Certified Fresh';
                 // Cache the rating with adaptive TTL
-                rtCache.data.set(rtCacheKey, rtRating, ttl);
+                await rtCache.data.set(rtCacheKey, rtRating, ttl);
                 logger.debug('Fetched and cached RT ratings', {
                   label: 'OverlayContextBuilder',
                   title: context.title,
@@ -465,7 +465,7 @@ export async function buildRenderContext(
                 });
               } else {
                 // Cache the null result with adaptive TTL
-                rtCache.data.set(rtCacheKey, RT_NULL_SENTINEL, nullTtl);
+                await rtCache.data.set(rtCacheKey, RT_NULL_SENTINEL, nullTtl);
                 logger.debug('RT rating not found, cached null', {
                   label: 'OverlayContextBuilder',
                   title: context.title,

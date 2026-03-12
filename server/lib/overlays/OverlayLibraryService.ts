@@ -413,7 +413,7 @@ class OverlayLibraryService {
       let nullCacheHits = 0;
 
       for (const [imdbId, data] of imdbData) {
-        const cachedRating = adaptiveCache.get<number | null>(imdbId);
+        const cachedRating = await adaptiveCache.get<number | null>(imdbId);
         if (cachedRating !== undefined) {
           // Store in preloadedImdbRatings (including null) to prevent fallback API calls
           this.preloadedImdbRatings.set(imdbId, cachedRating);
@@ -459,12 +459,12 @@ class OverlayLibraryService {
 
             if (rating.rating !== null) {
               this.preloadedImdbRatings.set(rating.imdbId, rating.rating);
-              adaptiveCache.set(rating.imdbId, rating.rating, ttl);
+              await adaptiveCache.set(rating.imdbId, rating.rating, ttl);
             } else {
               // Cache null rating with adaptive TTL based on content age
               const nullTtl = getNullRatingTtl(releaseYear);
               this.preloadedImdbRatings.set(rating.imdbId, null);
-              adaptiveCache.set(rating.imdbId, null, nullTtl);
+              await adaptiveCache.set(rating.imdbId, null, nullTtl);
             }
           }
 
@@ -473,7 +473,7 @@ class OverlayLibraryService {
             if (!receivedIds.has(item.imdbId)) {
               const nullTtl = getNullRatingTtl(item.releaseYear);
               this.preloadedImdbRatings.set(item.imdbId, null);
-              adaptiveCache.set(item.imdbId, null, nullTtl);
+              await adaptiveCache.set(item.imdbId, null, nullTtl);
             }
           }
 
@@ -612,7 +612,9 @@ class OverlayLibraryService {
 
       for (const item of tmdbItems) {
         const cacheKey = `${item.tmdbId}:${item.mediaType}`;
-        const cached = adaptiveCache.get<ReleaseDateInfo | null>(cacheKey);
+        const cached = await adaptiveCache.get<ReleaseDateInfo | null>(
+          cacheKey
+        );
 
         if (cached !== undefined) {
           this.preloadedTmdbReleaseDates.set(cacheKey, cached);
@@ -729,13 +731,13 @@ class OverlayLibraryService {
               );
               if (releaseDateInfo) {
                 preloadedMap?.set(cacheKey, releaseDateInfo);
-                adaptiveCache.set(cacheKey, releaseDateInfo, ttl);
+                await adaptiveCache.set(cacheKey, releaseDateInfo, ttl);
                 fetchSuccess++;
               } else {
                 // For movies without release dates, cache null
                 const nullTtl = getNullRatingTtl(year);
                 preloadedMap?.set(cacheKey, null);
-                adaptiveCache.set(cacheKey, null, nullTtl);
+                await adaptiveCache.set(cacheKey, null, nullTtl);
               }
             } catch (error) {
               fetchFailures++;
@@ -743,7 +745,7 @@ class OverlayLibraryService {
               if (mediaType === 'movie') {
                 const nullTtl = getNullRatingTtl(year);
                 preloadedMap?.set(cacheKey, null);
-                adaptiveCache.set(cacheKey, null, nullTtl);
+                await adaptiveCache.set(cacheKey, null, nullTtl);
               }
               logger.debug('TMDB prefetch failed for item', {
                 label: 'OverlayLibrary',
@@ -1351,7 +1353,9 @@ class OverlayLibraryService {
 
         // Update current item title (before processing)
         this.updateProgress(libraryId, (p) => {
-          p.currentTitle = item.parentTitle ? `${item.parentTitle} - ${item.title}` : item.title || '';
+          p.currentTitle = item.parentTitle
+            ? `${item.parentTitle} - ${item.title}`
+            : item.title || '';
         });
 
         try {
@@ -1363,7 +1367,7 @@ class OverlayLibraryService {
           const { parentRatingKey } = item;
           const parentMetadata = parentRatingKey
             ? batchMetadata.get(parentRatingKey) ??
-            (await plexApi.getMetadata(parentRatingKey))
+              (await plexApi.getMetadata(parentRatingKey))
             : undefined;
 
           // Merge full metadata with library item
@@ -1645,8 +1649,8 @@ class OverlayLibraryService {
         item.type === 'movie'
           ? 'movie'
           : item.type === 'season'
-            ? 'season'
-            : 'show';
+          ? 'season'
+          : 'show';
 
       // Warn if there's a mismatch between item type and library config
       if (actualMediaType !== configuredLibraryType) {
@@ -2026,7 +2030,8 @@ class OverlayLibraryService {
         // Re-throw to let caller track this as a failure
         // Previously this was silently returning, causing failed items to be counted as success
         throw new Error(
-          `Failed to get base poster for "${item.title}": ${error instanceof Error ? error.message : String(error)
+          `Failed to get base poster for "${item.title}": ${
+            error instanceof Error ? error.message : String(error)
           }`
         );
       }

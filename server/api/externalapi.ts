@@ -1,8 +1,8 @@
+import { type NodeCache } from '@server/lib/cache';
 import logger from '@server/logger';
 import type { AxiosInstance, AxiosRequestConfig } from 'axios';
 import axios from 'axios';
 import rateLimit from 'axios-rate-limit';
-import type NodeCache from 'node-cache';
 
 // 5 minute default TTL (in seconds)
 const DEFAULT_TTL = 300;
@@ -56,7 +56,7 @@ class ExternalAPI {
     ttl?: number
   ): Promise<T> {
     const cacheKey = this.serializeCacheKey(endpoint, config?.params);
-    const cachedItem = this.cache?.get<T>(cacheKey);
+    const cachedItem = await this.cache?.get<T>(cacheKey);
     if (cachedItem) {
       return cachedItem;
     }
@@ -64,7 +64,7 @@ class ExternalAPI {
     const response = await this.axios.get<T>(endpoint, config);
 
     if (this.cache) {
-      this.cache.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
+      await this.cache.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
     }
 
     return response.data;
@@ -80,7 +80,7 @@ class ExternalAPI {
       config: config?.params,
       data,
     });
-    const cachedItem = this.cache?.get<T>(cacheKey);
+    const cachedItem = await this.cache?.get<T>(cacheKey);
     if (cachedItem) {
       return cachedItem;
     }
@@ -88,7 +88,7 @@ class ExternalAPI {
     const response = await this.axios.post<T>(endpoint, data, config);
 
     if (this.cache) {
-      this.cache.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
+      await this.cache.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
     }
 
     return response.data;
@@ -100,10 +100,10 @@ class ExternalAPI {
     ttl?: number
   ): Promise<T> {
     const cacheKey = this.serializeCacheKey(endpoint, config?.params);
-    const cachedItem = this.cache?.get<T>(cacheKey);
+    const cachedItem = await this.cache?.get<T>(cacheKey);
 
     if (cachedItem) {
-      const keyTtl = this.cache?.getTtl(cacheKey) ?? 0;
+      const keyTtl = (await this.cache?.getTtl(cacheKey)) ?? 0;
 
       // If the item has passed our rolling check, fetch again in background
       if (
@@ -112,8 +112,8 @@ class ExternalAPI {
       ) {
         this.axios
           .get<T>(endpoint, config)
-          .then((response) => {
-            this.cache?.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
+          .then(async (response) => {
+            await this.cache?.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
           })
           .catch((error) => {
             // Log but don't throw - background refresh failure is acceptable
@@ -130,7 +130,7 @@ class ExternalAPI {
     const response = await this.axios.get<T>(endpoint, config);
 
     if (this.cache) {
-      this.cache.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
+      await this.cache.set(cacheKey, response.data, ttl ?? DEFAULT_TTL);
     }
 
     return response.data;

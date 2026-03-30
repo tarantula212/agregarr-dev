@@ -1921,7 +1921,7 @@ class OverlayLibraryService {
         },
       });
 
-      // OPTIMIZATION: Check if overlay inputs changed BEFORE downloading poster
+      // OPTIMIZATION: Check if overlay inputs or base poster changed BEFORE downloading poster
       // This prevents expensive poster downloads when nothing has changed
       try {
         const currentPosterUrl = await plexApi.getCurrentPosterUrl(
@@ -1931,46 +1931,35 @@ class OverlayLibraryService {
         const overlayInputsChanged =
           metadata?.lastOverlayInputHash !== overlayInputHash;
 
-        // Check if Plex poster changed using normalized comparison
-        // This handles different URL formats (upload://, /library/metadata/, http://...)
-        const { posterUrlsMatch, extractThumbId } = await import(
-          '@server/utils/posterUrlHelpers'
-        );
-        const plexPosterMissing = !posterUrlsMatch(
-          metadata?.ourOverlayPosterUrl,
-          currentPosterUrl
-        );
-
-        // Debug logging for poster URL comparison
-        logger.debug('Poster URL comparison', {
-          label: 'OverlayLibrary',
-          itemTitle: item.title,
-          storedUrl: metadata?.ourOverlayPosterUrl,
-          currentUrl: currentPosterUrl,
-          storedThumbId: extractThumbId(metadata?.ourOverlayPosterUrl),
-          currentThumbId: extractThumbId(currentPosterUrl),
-          urlsMatch: !plexPosterMissing,
-          plexPosterMissing,
-        });
-
-        // Also check if base poster source changed (TMDB vs Plex)
         const settings = getSettings();
         const posterSource = settings.overlays?.defaultPosterSource || 'tmdb';
-        const basePosterSourceChanged =
-          metadata?.basePosterSource !== posterSource;
 
-        if (
-          !overlayInputsChanged &&
-          !plexPosterMissing &&
-          !basePosterSourceChanged
-        ) {
+        const { plexBasePosterManager } = await import(
+          '@server/lib/overlays/PlexBasePosterManager'
+        );
+        const basePosterChanged =
+          await plexBasePosterManager.hasBasePosterChanged(
+            item,
+            posterSource,
+            libraryId,
+            libraryName,
+            currentPosterUrl,
+            {
+              basePosterSource: metadata?.basePosterSource,
+              originalPlexPosterUrl: metadata?.originalPlexPosterUrl,
+              ourOverlayPosterUrl: metadata?.ourOverlayPosterUrl,
+              localPosterModifiedTime: metadata?.localPosterModifiedTime,
+            },
+            tmdbId
+          );
+
+        if (!overlayInputsChanged && !basePosterChanged) {
           logger.debug('Nothing changed, skipping overlay application', {
             label: 'OverlayLibrary',
             itemTitle: item.title,
             ratingKey: item.ratingKey,
             overlayInputsChanged: false,
-            plexPosterMissing: false,
-            basePosterSourceChanged: false,
+            basePosterChanged: false,
           });
           return { skipped: true }; // Skip this item - no need to download poster
         }
@@ -1979,8 +1968,7 @@ class OverlayLibraryService {
           label: 'OverlayLibrary',
           itemTitle: item.title,
           overlayInputsChanged,
-          plexPosterMissing,
-          basePosterSourceChanged,
+          basePosterChanged,
         });
       } catch (metaError) {
         logger.warn('Metadata check failed, proceeding with overlay', {

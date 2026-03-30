@@ -391,8 +391,9 @@ class PlexBasePosterManager {
     } else {
       // Otherwise, build full URL from relative path
       const settings = getSettings();
-      const baseUrl = `${settings.plex.useSsl ? 'https' : 'http'}://${settings.plex.ip
-        }:${settings.plex.port}`;
+      const baseUrl = `${settings.plex.useSsl ? 'https' : 'http'}://${
+        settings.plex.ip
+      }:${settings.plex.port}`;
 
       // Build full URL with token
       fullUrl = `${baseUrl}${downloadPath}?X-Plex-Token=${plexApi['plexToken']}`;
@@ -569,87 +570,84 @@ class PlexBasePosterManager {
   }
 
   /**
-   * Check if base poster has changed WITHOUT downloading it
-   * Returns true if poster needs to be re-downloaded (URL changed or source switched)
-   * Much faster than full download - only makes lightweight API calls
+   * Check if the base poster has changed for any source — cheap, no poster download.
+   * Handles source switches, first-time detection, and per-source change signals.
+   *
+   * @param currentPosterUrl - Current active poster URL in Plex (pre-fetched by caller)
+   * @param tmdbId - Required for 'tmdb' and 'local' sources
    */
   async hasBasePosterChanged(
-    plexApi: PlexAPI,
     item: PlexLibraryItem,
-    posterSource: 'tmdb' | 'plex',
+    posterSource: 'tmdb' | 'plex' | 'local',
     libraryId: string,
+    libraryName: string,
+    currentPosterUrl: string | null,
     metadata: {
-      basePosterSource?: 'tmdb' | 'plex';
+      basePosterSource?: 'tmdb' | 'plex' | 'local';
       originalPlexPosterUrl?: string;
-    }
+      ourOverlayPosterUrl?: string;
+      localPosterModifiedTime?: number;
+    },
+    tmdbId?: number
   ): Promise<boolean> {
-    // Check if source switched (TMDB ↔ Plex)
+    // Source switched or first time → always re-apply
     if (
-      metadata.basePosterSource &&
+      !metadata.basePosterSource ||
       metadata.basePosterSource !== posterSource
     ) {
-      return true; // Source changed - need new poster
-    }
-
-    // First time - no metadata
-    if (!metadata.basePosterSource) {
       return true;
     }
 
-    if (posterSource === 'plex') {
-      // ===== PLEX SOURCE =====
-      const currentPlexPosterUrl = await plexApi.getCurrentPosterUrl(
-        item.ratingKey
+    if (posterSource === 'local') {
+      // Local: check file mod time — no network, cheap disk stat
+      if (!tmdbId) return true; // Can't locate folder without tmdbId
+      const { findImageFile, getFileModTime } = await import(
+        '@server/utils/fileSystemHelpers'
       );
-
-      if (!currentPlexPosterUrl) {
-        throw new Error('Item has no poster in Plex');
-      }
-
-      // Check if current URL is different from what we stored
-      const urlChanged =
-        currentPlexPosterUrl !== metadata.originalPlexPosterUrl;
-      return urlChanged;
-    } else {
-      // ===== TMDB SOURCE =====
-      const { getTmdbLanguage } = await import('@server/lib/settings');
-
-      // Extract TMDB ID
-      let tmdbId: number | undefined;
-      if (item.Guid) {
-        const tmdbGuid = item.Guid.find((g) => g.id?.includes('tmdb://'));
-        if (tmdbGuid) {
-          const match = tmdbGuid.id.match(/tmdb:\/\/(\d+)/);
-          if (match) {
-            tmdbId = parseInt(match[1]);
-          }
-        }
-      }
-
-      if (!tmdbId) {
-        throw new Error('No TMDB ID found for item');
-      }
-
-      // Determine media type from item.type
-      const mediaType: 'movie' | 'show' =
-        item.type === 'movie' ? 'movie' : 'show';
-
-      // Get TMDB poster URL using cached lookup
-      const language = await getTmdbLanguage(libraryId);
-      const posterUrl = await this.getTmdbPosterUrl(
-        tmdbId,
-        mediaType,
-        language
+      const title =
+        item.type === 'season' ? item.parent?.title ?? item.title : item.title;
+      const year =
+        item.type === 'season' ? item.parent?.year ?? item.year : item.year;
+      const localPosterPath = await this.buildLocalPosterPath(
+        libraryId,
+        libraryName,
+        title,
+        year,
+        tmdbId
       );
-
-      if (!posterUrl) {
-        throw new Error('No TMDB poster available');
+      const posterName =
+        item.type === 'season'
+          ? `Season${String(item.index ?? 0).padStart(2, '0')}`
+          : 'poster';
+      const imageFilePath = await findImageFile(localPosterPath, posterName);
+      if (!imageFilePath) {
+        // File gone — if we had one before, that's a change
+        return !!metadata.localPosterModifiedTime;
       }
-
-      // Check if TMDB URL changed
-      const tmdbUrlChanged = metadata.originalPlexPosterUrl !== posterUrl;
-      return tmdbUrlChanged;
+      const currentModTime = await getFileModTime(imageFilePath);
+      return (
+        !metadata.localPosterModifiedTime ||
+        metadata.localPosterModifiedTime !== currentModTime
+      );
     }
+
+    if (posterSource === 'plex') {
+      // Plex: our overlay should be the active poster; if not, user changed it
+      const { posterUrlsMatch } = await import(
+        '@server/utils/posterUrlHelpers'
+      );
+      return !posterUrlsMatch(currentPosterUrl, metadata.ourOverlayPosterUrl);
+    }
+
+    // TMDB: check if the poster URL at TMDB changed since last apply
+    if (!tmdbId) return false;
+    const { getTmdbLanguage } = await import('@server/lib/settings');
+    const mediaType: 'movie' | 'show' =
+      item.type === 'movie' ? 'movie' : 'show';
+    const language = await getTmdbLanguage(libraryId);
+    const posterUrl = await this.getTmdbPosterUrl(tmdbId, mediaType, language);
+    if (!posterUrl) return false;
+    return metadata.originalPlexPosterUrl !== posterUrl;
   }
 
   /**

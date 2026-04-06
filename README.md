@@ -101,7 +101,7 @@ Upstream placeholder cleanup has gaps that leave orphaned entries in Plex and do
 
 **Sonarr Folder Naming** -- Agregarr creates placeholders at `/tv/Show (2024)/` but Sonarr uses `/tv/Show (2024) [imdbid-tt1234567]/`. When real content arrives, Plex sees them as different shows, leaving orphaned entries. This fork extracts the folder name from Sonarr's series path. Falls back to standard naming if the show isn't in Sonarr.
 
-**Download Status Awareness** -- Upstream doesn't check whether content has already been downloaded in Radarr/Sonarr. This fork queries *arr download status in batch, skips placeholder creation for items already downloaded, and uses download status as a cleanup signal. Prevents unnecessary placeholders for content that's about to arrive.
+**Download Status Awareness** -- Upstream doesn't check whether content has already been downloaded in Radarr/Sonarr. This fork queries \*arr download status in batch, skips placeholder creation for items already downloaded, and uses download status as a cleanup signal. Prevents unnecessary placeholders for content that's about to arrive.
 
 **Post-Sync Hub Verification** -- After collection sync completes, queries each filtered hub and applies missing `trailer-placeholder` labels to any items that slipped through. A safety net that catches label leaks regardless of which pipeline stage failed to apply them.
 
@@ -111,29 +111,32 @@ Upstream placeholder cleanup has gaps that leave orphaned entries in Plex and do
 
 | PR                                                    | Description                                                 | Depends On |
 | ----------------------------------------------------- | ----------------------------------------------------------- | ---------- |
+| [#556](https://github.com/agregarr/agregarr/pull/556) | Remove date-based overlays when content is downloaded       | -          |
+| [#547](https://github.com/agregarr/agregarr/pull/547) | Back off on IMDb Top 250 cache refresh failure              | -          |
 | [#526](https://github.com/agregarr/agregarr/pull/526) | Retroactive placeholder filter evaluation during cleanup    | -          |
 | [#516](https://github.com/agregarr/agregarr/pull/516) | Check \*arr download status + Sonarr folder naming          | -          |
-| [#515](https://github.com/agregarr/agregarr/pull/515) | Remove vm2 sandbox dependency                               | -          |
-| [#514](https://github.com/agregarr/agregarr/pull/514) | Fix SVG sanitisation bypass                                 | -          |
-| [#513](https://github.com/agregarr/agregarr/pull/513) | Fix export path traversal                                   | -          |
-| [#503](https://github.com/agregarr/agregarr/pull/503) | Fix TV placeholders leaking into filtered hubs              | -          |
 | [#498](https://github.com/agregarr/agregarr/pull/498) | Deduplicate hub identifiers to prevent convergence failures | -          |
-| [#492](https://github.com/agregarr/agregarr/pull/492) | Title fallback for TV placeholders without TMDB GUID        | #491       |
+| [#492](https://github.com/agregarr/agregarr/pull/492) | Title fallback for TV placeholders without TMDB GUID        | -          |
 
 ### Fork-Only (No Upstream PR Planned)
 
-| Feature                                         | Why Fork-Only                              |
-| ----------------------------------------------- | ------------------------------------------ |
-| Direct Plex API deletion for stale placeholders | Requires "Allow media deletion" in Plex    |
+| Feature                                         | Why Fork-Only                               |
+| ----------------------------------------------- | ------------------------------------------- |
+| Direct Plex API deletion for stale placeholders | Requires "Allow media deletion" in Plex     |
 | Post-sync hub verification for label leaks      | Safety net for fork's label-based filtering |
 
 > **Legacy Cleanup:** TV placeholders created before the Sonarr folder naming fix may not match Sonarr's naming convention. If orphaned placeholders appear after real content arrives, delete the placeholder folder and let the next sync recreate it correctly.
 
-### Merged
+<details>
+<summary>Merged (40 PRs)</summary>
 
 | PR                                                    | Description                                                          |
 | ----------------------------------------------------- | -------------------------------------------------------------------- |
+| [#515](https://github.com/agregarr/agregarr/pull/515) | Remove vm2 sandbox dependency                                        |
+| [#514](https://github.com/agregarr/agregarr/pull/514) | Fix SVG sanitisation bypass                                          |
+| [#513](https://github.com/agregarr/agregarr/pull/513) | Fix export path traversal                                            |
 | [#504](https://github.com/agregarr/agregarr/pull/504) | Support Maintainerr v3 API (mediaServerId rename)                    |
+| [#503](https://github.com/agregarr/agregarr/pull/503) | Fix TV placeholders leaking into filtered hubs                       |
 | [#491](https://github.com/agregarr/agregarr/pull/491) | Handle Plex returning TV seasons as Children.Directory               |
 | [#481](https://github.com/agregarr/agregarr/pull/481) | Guard splice in arrangeCollectionItemsInOrder                        |
 | [#483](https://github.com/agregarr/agregarr/pull/483) | Parallelise collection membership check in overlay test              |
@@ -171,10 +174,12 @@ Upstream placeholder cleanup has gaps that leave orphaned entries in Plex and do
 | [#278](https://github.com/agregarr/agregarr/pull/278) | Filter daily shows from Coming Soon collections                      |
 | [#277](https://github.com/agregarr/agregarr/pull/277) | TMDB poster caching and race condition fixes                         |
 
+</details>
+
 ## License
 
 GPL-3.0, same as upstream.
 
 ## Credits
 
-All the real work is by the [Agregarr](https://github.com/agregarr/agregarr) team.
+Built on [Agregarr](https://github.com/agregarr/agregarr).

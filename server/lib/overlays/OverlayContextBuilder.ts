@@ -339,26 +339,33 @@ export async function buildRenderContext(
           }
         }
 
-        // IMDb Top 250 check
-        try {
-          const imdbClient = getImdbClient();
-          const imdbMediaType: 'movie' | 'tv' =
-            mediaType === 'movie' ? 'movie' : 'tv';
-          const top250Result = await imdbClient.checkTop250(
-            imdbId,
-            imdbMediaType
-          );
+        // IMDb Top 250 check - skip if no template uses Top 250 fields
+        const needsTop250 =
+          !requiredContextFields ||
+          requiredContextFields.has('isImdbTop250') ||
+          requiredContextFields.has('imdbTop250Rank');
 
-          if (top250Result.isTop250) {
-            context.isImdbTop250 = true;
-            context.imdbTop250Rank = top250Result.rank;
+        if (needsTop250) {
+          try {
+            const imdbClient = getImdbClient();
+            const imdbMediaType: 'movie' | 'tv' =
+              mediaType === 'movie' ? 'movie' : 'tv';
+            const top250Result = await imdbClient.checkTop250(
+              imdbId,
+              imdbMediaType
+            );
+
+            if (top250Result.isTop250) {
+              context.isImdbTop250 = true;
+              context.imdbTop250Rank = top250Result.rank;
+            }
+          } catch (error) {
+            logger.debug('Failed to check IMDb Top 250', {
+              label: 'OverlayContextBuilder',
+              imdbId,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
-        } catch (error) {
-          logger.debug('Failed to check IMDb Top 250', {
-            label: 'OverlayContextBuilder',
-            imdbId,
-            error: error instanceof Error ? error.message : String(error),
-          });
         }
       }
 
@@ -370,6 +377,13 @@ export async function buildRenderContext(
         requiredContextFields.has('rtCertifiedFresh');
 
       if (needsRtRatings && tmdbId) {
+        // Use TMDb title for RT lookup — Plex titles may include year suffixes
+        // (e.g. "Young Sherlock 2026") that break RT fuzzy matching
+        const rtTitle =
+          mediaType === 'movie'
+            ? (tmdbData as { title: string }).title
+            : (tmdbData as { name: string }).name;
+
         // Use TMDB ID as cache key (stable, avoids title/year collision issues)
         const rtCacheKey = `rt:${mediaType}:${tmdbId}`;
         const rtCache = cacheManager.getCache('rt-ratings');
@@ -430,11 +444,11 @@ export async function buildRenderContext(
               const rtClient = new RottenTomatoes();
               return mediaType === 'movie'
                 ? await rtClient.getMovieRatings(
-                    context.title || '',
+                    rtTitle || context.title || '',
                     context.year || 0
                   )
                 : await rtClient.getTVRatings(
-                    context.title || '',
+                    rtTitle || context.title || '',
                     context.year
                   );
             })();
@@ -776,26 +790,33 @@ export async function buildRenderContext(
         }
       }
 
-      // IMDb Top 250 check
-      try {
-        const imdbClient = getImdbClient();
-        const imdbMediaType: 'movie' | 'tv' =
-          mediaType === 'show' ? 'tv' : 'movie';
-        const top250Result = await imdbClient.checkTop250(
-          imdbId,
-          imdbMediaType
-        );
+      // IMDb Top 250 check - skip if no template uses Top 250 fields
+      const needsTop250 =
+        !requiredContextFields ||
+        requiredContextFields.has('isImdbTop250') ||
+        requiredContextFields.has('imdbTop250Rank');
 
-        if (top250Result.isTop250) {
-          context.isImdbTop250 = true;
-          context.imdbTop250Rank = top250Result.rank;
+      if (needsTop250) {
+        try {
+          const imdbClient = getImdbClient();
+          const imdbMediaType: 'movie' | 'tv' =
+            mediaType === 'show' ? 'tv' : 'movie';
+          const top250Result = await imdbClient.checkTop250(
+            imdbId,
+            imdbMediaType
+          );
+
+          if (top250Result.isTop250) {
+            context.isImdbTop250 = true;
+            context.imdbTop250Rank = top250Result.rank;
+          }
+        } catch (error) {
+          logger.debug('Failed to check IMDb Top 250', {
+            label: 'OverlayContextBuilder',
+            imdbId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-      } catch (error) {
-        logger.debug('Failed to check IMDb Top 250', {
-          label: 'OverlayContextBuilder',
-          imdbId,
-          error: error instanceof Error ? error.message : String(error),
-        });
       }
     }
   }

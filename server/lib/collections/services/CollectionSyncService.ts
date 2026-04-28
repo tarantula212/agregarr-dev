@@ -180,6 +180,28 @@ export class CollectionSyncService {
             // This works even without a plexItem (content downloaded to different library)
             if (!needsTitleFix && marker.tmdbId) {
               // Real content detected - clean up placeholder
+              if (plexItem) {
+                try {
+                  await plexClient.removeLabelFromItem(
+                    plexItem.ratingKey,
+                    'trailer-placeholder'
+                  );
+                } catch (error) {
+                  logger.warn(
+                    'Failed to remove placeholder label, deferring cleanup',
+                    {
+                      label: 'Collection Sync Service',
+                      title: marker.title,
+                      ratingKey: plexItem.ratingKey,
+                      error:
+                        error instanceof Error
+                          ? error.message
+                          : 'Unknown error',
+                    }
+                  );
+                  continue;
+                }
+              }
               await cleanupPlaceholderForRealContent(
                 marker.tmdbId,
                 marker.placeholderPath,
@@ -369,6 +391,28 @@ export class CollectionSyncService {
             // This works even without a plexItem (content downloaded to different library)
             if (needsCleanup) {
               // Real content detected - clean up placeholder
+              if (plexItem) {
+                try {
+                  await plexClient.removeLabelFromItem(
+                    plexItem.ratingKey,
+                    'trailer-placeholder'
+                  );
+                } catch (error) {
+                  logger.warn(
+                    'Failed to remove placeholder label, deferring cleanup',
+                    {
+                      label: 'Collection Sync Service',
+                      title: movie.title,
+                      ratingKey: plexItem.ratingKey,
+                      error:
+                        error instanceof Error
+                          ? error.message
+                          : 'Unknown error',
+                    }
+                  );
+                  continue;
+                }
+              }
               await cleanupPlaceholderForRealContent(
                 movie.tmdbId,
                 movie.placeholderPath,
@@ -491,7 +535,7 @@ export class CollectionSyncService {
       );
 
       try {
-        onProgress?.(0, 'Applying Overseerr user restrictions...');
+        onProgress?.(0, 'Applying Seerr user restrictions...');
         await this.applyPreSyncUserRestrictions(
           hasUsersConfig,
           hasServerOwnerConfig

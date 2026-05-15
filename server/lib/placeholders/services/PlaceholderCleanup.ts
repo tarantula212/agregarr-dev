@@ -11,13 +11,16 @@ import path from 'path';
 import { Like, Not } from 'typeorm';
 
 /**
- * Helper function to clean up a placeholder when real content is detected
- * Deletes the placeholder file and ALL database records for this TMDB ID across all collections
+ * Helper function to clean up a placeholder when real content is detected.
+ * Removes the Plex label, deletes the placeholder file, and deletes ALL
+ * database records for this TMDB ID across all collections.
  */
 export async function cleanupPlaceholderForRealContent(
   tmdbId: number,
   placeholderPath: string,
-  mediaType: 'movie' | 'tv'
+  mediaType: 'movie' | 'tv',
+  plexClient?: PlexAPI,
+  plexRatingKey?: string
 ): Promise<void> {
   const { removePlaceholder } = await import(
     '@server/lib/placeholders/placeholderManager'
@@ -25,7 +28,54 @@ export async function cleanupPlaceholderForRealContent(
   const repository = getRepository(ComingSoonItem);
 
   try {
-    // Delete the placeholder file
+    if (plexClient && plexRatingKey) {
+      try {
+        await plexClient.removeLabelFromItem(
+          plexRatingKey,
+          'trailer-placeholder'
+        );
+        logger.info('Removed trailer-placeholder label from Plex item', {
+          label: 'PlaceholderService',
+          tmdbId,
+          ratingKey: plexRatingKey,
+        });
+      } catch (error) {
+        logger.warn(
+          'Failed to remove placeholder label — continuing with file/DB cleanup',
+          {
+            label: 'PlaceholderService',
+            tmdbId,
+            ratingKey: plexRatingKey,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          }
+        );
+      }
+
+      // Also check DB for other ratingKeys that may have the label
+      // (handles separate Plex entries for placeholder vs real content)
+      const dbRecords = await repository.find({ where: { tmdbId } });
+      for (const record of dbRecords) {
+        if (record.plexRatingKey && record.plexRatingKey !== plexRatingKey) {
+          try {
+            await plexClient.removeLabelFromItem(
+              record.plexRatingKey,
+              'trailer-placeholder'
+            );
+            logger.info(
+              'Removed trailer-placeholder label from placeholder Plex entry',
+              {
+                label: 'PlaceholderService',
+                tmdbId,
+                ratingKey: record.plexRatingKey,
+              }
+            );
+          } catch {
+            // Best effort — placeholder entry may already be gone
+          }
+        }
+      }
+    }
+
     await removePlaceholder(placeholderPath, mediaType);
 
     logger.info('Deleted placeholder file - real content detected', {
@@ -35,7 +85,6 @@ export async function cleanupPlaceholderForRealContent(
       placeholderPath,
     });
 
-    // Delete ALL database records for this TMDB ID (across all collections)
     const allRecords = await repository.find({
       where: { tmdbId },
     });
@@ -681,6 +730,15 @@ async function deletePlexPlaceholderEpisode(
   title: string
 ): Promise<void> {
   try {
+    try {
+      await plexClient.removeLabelFromItem(
+        showRatingKey,
+        'trailer-placeholder'
+      );
+    } catch {
+      // Best-effort — don't block episode deletion
+    }
+
     const seasons = await plexClient.getChildrenMetadata(showRatingKey);
     const season00 = seasons.find((s) => s.index === 0);
     if (!season00) return;
@@ -920,6 +978,25 @@ export async function cleanupPlaceholdersForConfig(
                 }
 
                 await repository.remove(placeholder);
+
+                // Clean up empty parent directories left behind
+                try {
+                  const parentDir = path.dirname(fullPath);
+                  const parentFiles = await fs.readdir(parentDir);
+                  if (parentFiles.length === 0) {
+                    await fs.rmdir(parentDir);
+                    if (placeholder.mediaType === 'tv') {
+                      const grandParentDir = path.dirname(parentDir);
+                      const gpFiles = await fs.readdir(grandParentDir);
+                      if (gpFiles.length === 0) {
+                        await fs.rmdir(grandParentDir);
+                      }
+                    }
+                  }
+                } catch {
+                  // Best effort — directory may not be empty or already gone
+                }
+
                 removedCount++;
                 continue; // Already removed — skip filter and orphan checks
               }

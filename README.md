@@ -1,10 +1,10 @@
-# Agregarr (Personal Fork)
+# Agregarr (bitr8 fork)
 
-Personal fork of [Agregarr](https://github.com/agregarr/agregarr) for testing changes before submitting upstream. Automatically builds to `bitr8/agregarr:develop` on Docker Hub.
+Active fork of [Agregarr](https://github.com/agregarr/agregarr) packaging performance fixes, placeholder lifecycle improvements, and open upstream PRs into a single Docker image. Builds automatically to `bitr8/agregarr:develop` on Docker Hub.
 
 ## Docker Image
 
-Available on Docker Hub as [`bitr8/agregarr`](https://hub.docker.com/r/bitr8/agregarr). Both `develop` and `latest` tags track the develop branch and include all fork-only features plus open upstream PRs. The image rebuilds automatically on every push to develop.
+Available on Docker Hub as [`bitr8/agregarr`](https://hub.docker.com/r/bitr8/agregarr). `develop` and `latest` tags are identical — both track the develop branch with all fork features included. Rebuilds on every push.
 
 **amd64 only** — no arm64/Apple Silicon builds.
 
@@ -35,9 +35,13 @@ services:
 
 For general Agregarr configuration (services, collections, overlays etc.), see the [upstream docs](https://agregarr.org/docs/installation) — note that they reference the upstream image, not this fork.
 
+## Relationship to upstream
+
+This fork tracks upstream Agregarr and stays GPL-3.0. Changes that fit upstream go back as PRs (46 merged, 7 open). Fork-only features are documented separately — they rely on behaviour or trade-offs upstream may not want to adopt.
+
 ## Fork-Only Features
 
-Features in this fork that aren't in upstream Agregarr. Some have open PRs, others are fork-only. These exist because upstream has scaling pain points when running many collections, and placeholder lifecycle has gaps that leave orphaned entries in Plex.
+Two problem areas drove most of these changes: sync performance at scale (40+ collections, 10k+ items) and placeholder lifecycle gaps that leave orphaned entries in Plex.
 
 ### Real-time Overlay Job Progress
 
@@ -58,6 +62,7 @@ Upstream Agregarr makes individual API calls per item, per rating source, per ca
 | **Batch Overlay Metadata**    | Plex metadata fetched one item at a time             | Batches of 200 per API call. Falls back on failure     |
 | **AniList Retry Cap**         | `parseInt` NaN bug causes infinite tight retry loops | Capped at 5 attempts                                   |
 | **Release Date TTL Cap**      | Stale cache shows wrong overlay for new releases     | Items within 3 days of release: max 2h TTL             |
+| **Sync Status Fix**           | Large multi-source collections stuck as "pending"    | Partial source failures no longer block sync status    |
 
 **Persistent TMDB Resolution Cache** -- Letterboxd collections require resolving titles to TMDB IDs. Upstream re-resolves every item on every sync (6 TMDB API calls each). This caches results in SQLite with adaptive TTL.
 
@@ -91,13 +96,13 @@ Defaults to `false` (Playwright) for safety. Flip back if Cloudflare starts bloc
 
 Upstream placeholder cleanup has gaps that leave orphaned entries in Plex and don't respond to filter changes.
 
-**Retroactive Filter Application** -- Upstream placeholder filters (year, language, country, genre, keyword) only apply when placeholders are created. Filters added after creation have no effect on existing placeholders. This fork evaluates existing placeholders against the current filter config during cleanup and removes those that no longer pass. Rating filters are skipped for retroactive evaluation since unreleased content has no ratings.
+**Retroactive Filter Application** -- Upstream filters only apply at creation time — adding filters later has no effect on existing placeholders. This fork evaluates existing placeholders against the current filter config during cleanup and removes those that no longer pass. Rating filters are skipped since unreleased content has no ratings.
 
-**Self-Healing for Stuck Records** -- If a placeholder file is deleted externally (disk issue, manual cleanup), the DB record blocks re-creation. This fork detects missing files for active items and clears the DB record so the creation flow can recreate the placeholder on next sync. Only triggers on confirmed file-not-found (ENOENT), not transient filesystem errors.
+**Self-Healing for Stuck Records** -- If a placeholder file is deleted externally (disk issue, manual cleanup), the DB record blocks re-creation. This fork detects missing files and clears the stale record so the next sync can recreate it. Only triggers on confirmed ENOENT, not transient filesystem errors.
 
-**Direct Plex Deletion** -- Plex ignores empty directories during library scans. When a placeholder file is deleted and its folder becomes empty, `scanLibrary()` + `emptyTrash()` won't remove the stale database entry. This fork deletes stale items directly via `DELETE /library/metadata/{ratingKey}`, matching by exact file path. Falls back to scan+trash when direct deletion can't find matches.
+**Direct Plex Deletion** -- Plex ignores empty directories during library scans, so `scanLibrary()` + `emptyTrash()` won't clean up stale entries after a placeholder file is removed. This fork deletes stale items directly via `DELETE /library/metadata/{ratingKey}`, matching by exact file path. Falls back to scan+trash when direct deletion can't find matches.
 
-**TV Episode Cleanup** -- TV placeholders create an S00E00 episode that persists in Plex after the placeholder file and DB record are cleaned up. Upstream's `findItemsByFilePaths` queries shows (not episodes), so TV paths never match. Config cleanup also never explicitly deletes the Plex episode. This fork pre-resolves episode ratingKeys (type=4) before file deletion, and navigates show > Season 00 > Episode 0 to delete stale episodes during config cleanup.
+**TV Episode Cleanup** -- TV placeholders create an S00E00 episode that persists in Plex after the placeholder file and DB record are cleaned up. Upstream cleanup queries shows, not episodes, so TV paths never match. This fork pre-resolves episode ratingKeys before file deletion and navigates show > Season 00 > Episode 0 to delete stale episodes during config cleanup.
 
 **Sonarr Folder Naming** -- Agregarr creates placeholders at `/tv/Show (2024)/` but Sonarr uses `/tv/Show (2024) [imdbid-tt1234567]/`. When real content arrives, Plex sees them as different shows, leaving orphaned entries. This fork extracts the folder name from Sonarr's series path. Falls back to standard naming if the show isn't in Sonarr.
 
@@ -105,14 +110,19 @@ Upstream placeholder cleanup has gaps that leave orphaned entries in Plex and do
 
 **Post-Sync Hub Verification** -- After collection sync completes, queries each filtered hub and applies missing `trailer-placeholder` labels to any items that slipped through. A safety net that catches label leaks regardless of which pipeline stage failed to apply them.
 
+**TV Placeholder Label Cleanup** -- Upstream only removes the `trailer-placeholder` label during full sync's discovery path. Quick sync (when real content arrives between full syncs) cleaned up files and DB records but left the label on the Plex show, hiding it from Recently Added. This fork centralises label removal into all cleanup paths and adds a `tvdbId` fallback from the DB when marker files lack it.
+
+**TV Placeholder Real Content Detection** -- Upstream's TV placeholder discovery never checks whether real content has arrived — when a Plex item exists for a marker, it always keeps it as a placeholder. Movies have this detection, but TV skips it entirely. This fork adds the same Plex metadata check: if the show has Season 1+ alongside Season 00, cleanup triggers. Sonarr download status is a secondary signal. Also fixes a truthy-empty-array bug where `Metadata || Directory` picks an empty array over a populated one, and makes label removal best-effort so transient Plex errors don't block cleanup.
+
 ## Upstream PRs
 
 ### Open
 
 | PR                                                    | Description                                                 | Depends On |
 | ----------------------------------------------------- | ----------------------------------------------------------- | ---------- |
-| [#556](https://github.com/agregarr/agregarr/pull/556) | Remove date-based overlays when content is downloaded       | -          |
-| [#547](https://github.com/agregarr/agregarr/pull/547) | Back off on IMDb Top 250 cache refresh failure              | -          |
+| [#596](https://github.com/agregarr/agregarr/pull/596) | Detect real content in TV placeholder cleanup via Plex      | -          |
+| [#595](https://github.com/agregarr/agregarr/pull/595) | Fix jobs page crash on unparseable cron expressions         | -          |
+| [#594](https://github.com/agregarr/agregarr/pull/594) | Sanitise poster filenames to match validation allowlist     | -          |
 | [#526](https://github.com/agregarr/agregarr/pull/526) | Retroactive placeholder filter evaluation during cleanup    | -          |
 | [#516](https://github.com/agregarr/agregarr/pull/516) | Check \*arr download status + Sonarr folder naming          | -          |
 | [#498](https://github.com/agregarr/agregarr/pull/498) | Deduplicate hub identifiers to prevent convergence failures | -          |
@@ -125,13 +135,18 @@ Upstream placeholder cleanup has gaps that leave orphaned entries in Plex and do
 | Direct Plex API deletion for stale placeholders | Requires "Allow media deletion" in Plex     |
 | Post-sync hub verification for label leaks      | Safety net for fork's label-based filtering |
 
-> **Legacy Cleanup:** TV placeholders created before the Sonarr folder naming fix may not match Sonarr's naming convention. If orphaned placeholders appear after real content arrives, delete the placeholder folder and let the next sync recreate it correctly.
+> **Note:** TV placeholders created before the Sonarr folder naming fix may not match Sonarr's naming convention. If orphaned placeholders appear after real content arrives, delete the placeholder folder and let the next sync recreate it correctly.
 
 <details>
-<summary>Merged (40 PRs)</summary>
+<summary>Merged (46 PRs)</summary>
 
 | PR                                                    | Description                                                          |
 | ----------------------------------------------------- | -------------------------------------------------------------------- |
+| [#579](https://github.com/agregarr/agregarr/pull/579) | Refresh Plex shared-server cache at start of user filter batches     |
+| [#578](https://github.com/agregarr/agregarr/pull/578) | Clean up legacy placeholder edition titles during sync               |
+| [#567](https://github.com/agregarr/agregarr/pull/567) | Fix Plex webhook multer multipart parsing                            |
+| [#556](https://github.com/agregarr/agregarr/pull/556) | Remove date-based overlays when content is downloaded                |
+| [#547](https://github.com/agregarr/agregarr/pull/547) | Back off on IMDb Top 250 cache refresh failure                       |
 | [#515](https://github.com/agregarr/agregarr/pull/515) | Remove vm2 sandbox dependency                                        |
 | [#514](https://github.com/agregarr/agregarr/pull/514) | Fix SVG sanitisation bypass                                          |
 | [#513](https://github.com/agregarr/agregarr/pull/513) | Fix export path traversal                                            |

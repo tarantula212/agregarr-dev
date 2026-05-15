@@ -160,9 +160,6 @@ export async function discoverPlaceholdersFromMarkers(
         plexMatches.get(`${marker.tmdbId}-tv`);
 
       // Title fallback for items without TMDB GUID in Plex
-      // Marker file on disk proves this is an Agregarr-created placeholder —
-      // don't gate on isPlaceholderItem() which returns false for TV shows
-      // when Children metadata is missing from the Plex API response.
       if (!plexItem) {
         const titleMatches = await findPlexItemsByTitle(
           plexClient,
@@ -191,20 +188,54 @@ export async function discoverPlaceholdersFromMarkers(
       }
 
       // Check if *arr reports content as downloaded (works even if content is in different Plex library)
-      const arrStatus = marker.tvdbId
-        ? showsByTvdbId.get(marker.tvdbId)
+      // Fall back to DB record's tvdbId when marker file lacks it
+      let effectiveTvdbId = marker.tvdbId;
+      if (!effectiveTvdbId) {
+        const dbRecord = await repository.findOne({
+          where: { tmdbId: marker.tmdbId },
+          select: ['tvdbId'],
+        });
+        if (dbRecord?.tvdbId) {
+          effectiveTvdbId = dbRecord.tvdbId;
+        }
+      }
+      const arrStatus = effectiveTvdbId
+        ? showsByTvdbId.get(effectiveTvdbId)
         : undefined;
       const isDownloadedInArr = arrStatus?.downloaded === true;
 
-      // Marker file on disk proves this is an Agregarr-created placeholder.
-      // Don't re-verify via isPlaceholderItem — returns false for TV shows
-      // when Children metadata is missing from the Plex API response.
-      // Only *arr download status determines cleanup vs title-fix.
+      // Two independent detection methods (mirrors the movie discovery path):
+      // 1. Check Plex metadata for real seasons (Season 1+)
+      // 2. Check Sonarr download status
       let needsTitleFix = false;
       if (plexItem) {
-        needsTitleFix = !isDownloadedInArr;
+        let isStillPlaceholder = true;
+        try {
+          const plexMetadata = await plexClient.getMetadata(
+            plexItem.ratingKey.toString(),
+            { includeChildren: true }
+          );
+          isStillPlaceholder =
+            placeholderContextService.isPlaceholderItem(plexMetadata);
+        } catch (error) {
+          logger.warn('Failed to fetch Plex metadata for placeholder check', {
+            label: 'PlaceholderService',
+            title: marker.title,
+            ratingKey: plexItem.ratingKey,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
-        if (isDownloadedInArr) {
+        if (!isStillPlaceholder) {
+          logger.info(
+            'TV placeholder has real content now - triggering cleanup',
+            {
+              label: 'PlaceholderService',
+              title: marker.title,
+              ratingKey: plexItem.ratingKey,
+            }
+          );
+        } else if (isDownloadedInArr) {
           logger.info(
             'Placeholder has content downloaded in Sonarr - triggering cleanup',
             {
@@ -213,6 +244,8 @@ export async function discoverPlaceholdersFromMarkers(
               tvdbId: marker.tvdbId,
             }
           );
+        } else {
+          needsTitleFix = true;
         }
       } else if (isDownloadedInArr) {
         // No Plex item found but *arr says downloaded - still trigger cleanup
@@ -275,7 +308,6 @@ export async function discoverPlaceholdersFromMarkers(
           plexMatches.get(`${dbRecord.tmdbId}-tv`);
 
         // Title fallback for items without TMDB GUID in Plex
-        // Marker file proves this is a placeholder — trust it over isPlaceholderItem()
         if (!plexItem) {
           const titleMatches = await findPlexItemsByTitle(
             plexClient,
@@ -316,15 +348,38 @@ export async function discoverPlaceholdersFromMarkers(
           : undefined;
         const isDownloadedInArr = arrStatus?.downloaded === true;
 
-        // Marker file on disk proves this is an Agregarr-created placeholder.
-        // Don't re-verify via isPlaceholderItem — returns false for TV shows
-        // when Children metadata is missing from the Plex API response.
-        // Only *arr download status determines cleanup vs title-fix.
+        // Two independent detection methods (mirrors Tier 1 and movie path):
+        // 1. Check Plex metadata for real seasons (Season 1+)
+        // 2. Check Sonarr download status
         let needsTitleFix = false;
         if (plexItem) {
-          needsTitleFix = !isDownloadedInArr;
+          let isStillPlaceholder = true;
+          try {
+            const plexMetadata = await plexClient.getMetadata(
+              plexItem.ratingKey.toString(),
+              { includeChildren: true }
+            );
+            isStillPlaceholder =
+              placeholderContextService.isPlaceholderItem(plexMetadata);
+          } catch (error) {
+            logger.warn('Failed to fetch Plex metadata for placeholder check', {
+              label: 'PlaceholderService',
+              title: marker.title,
+              ratingKey: plexItem.ratingKey,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
 
-          if (isDownloadedInArr) {
+          if (!isStillPlaceholder) {
+            logger.info(
+              'Tier 2: TV placeholder has real content now - triggering cleanup',
+              {
+                label: 'PlaceholderService',
+                title: marker.title,
+                ratingKey: plexItem.ratingKey,
+              }
+            );
+          } else if (isDownloadedInArr) {
             logger.info(
               'Tier 2: Content downloaded in Sonarr - triggering cleanup',
               {
@@ -333,6 +388,8 @@ export async function discoverPlaceholdersFromMarkers(
                 tvdbId: dbRecord.tvdbId,
               }
             );
+          } else {
+            needsTitleFix = true;
           }
         } else if (isDownloadedInArr) {
           // No Plex item but *arr says downloaded - trigger cleanup

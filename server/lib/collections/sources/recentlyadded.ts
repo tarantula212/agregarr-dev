@@ -33,7 +33,7 @@ import type {
   SyncResult,
 } from '@server/lib/collections/core/types';
 import { CollectionSyncErrorType } from '@server/lib/collections/core/types';
-import type { CollectionConfig } from '@server/lib/settings';
+import { getSettings, type CollectionConfig } from '@server/lib/settings';
 import logger from '@server/logger';
 
 export class FilteredHubCollectionSync extends BaseCollectionSync<'filtered_hub'> {
@@ -197,6 +197,84 @@ export class FilteredHubCollectionSync extends BaseCollectionSync<'filtered_hub'
       generatedName: collectionName,
     });
 
+    // Resolve collection exclusions to Plex collection titles
+    const excludeCollectionTitles: string[] = [];
+    if (config.excludeFromCollections?.length) {
+      const settings = getSettings();
+      const libraryCollections = allCollections.filter(
+        (col) => col.libraryKey === config.libraryId
+      );
+      logger.info('Resolving filtered hub exclusions', {
+        label: 'Filtered Hub Collections',
+        configName: config.name,
+        excludeFromCollections: config.excludeFromCollections,
+        libraryId: config.libraryId,
+        allCollectionsCount: allCollections.length,
+        libraryCollectionsCount: libraryCollections.length,
+      });
+      for (const excludedId of config.excludeFromCollections) {
+        const excludedConfig = settings.plex.collectionConfigs?.find(
+          (c) => c.id === excludedId
+        );
+        if (!excludedConfig) {
+          logger.warn(`Exclusion config ${excludedId} not found in settings`, {
+            label: 'Filtered Hub Collections',
+          });
+          continue;
+        }
+        if (!excludedConfig.collectionRatingKey) {
+          logger.warn(
+            `Exclusion config ${excludedId} (${excludedConfig.name}) has no collectionRatingKey`,
+            {
+              label: 'Filtered Hub Collections',
+              excludedConfigType: excludedConfig.type,
+              excludedConfigLibrary: excludedConfig.libraryId,
+            }
+          );
+          continue;
+        }
+        const plexCol = libraryCollections.find(
+          (c) => c.ratingKey === excludedConfig.collectionRatingKey
+        );
+        if (plexCol?.title) {
+          excludeCollectionTitles.push(plexCol.title);
+          logger.info(
+            `Resolved exclusion: ${excludedConfig.name} -> Plex "${plexCol.title}" (ratingKey ${plexCol.ratingKey})`,
+            { label: 'Filtered Hub Collections' }
+          );
+        } else {
+          logger.warn(
+            `Exclusion config ${excludedId} (${excludedConfig.name}): Plex collection not found in library`,
+            {
+              label: 'Filtered Hub Collections',
+              collectionRatingKey: excludedConfig.collectionRatingKey,
+              excludedConfigLibrary: excludedConfig.libraryId,
+              hubLibrary: config.libraryId,
+              libraryCollectionKeys: libraryCollections
+                .map((c) => c.ratingKey)
+                .slice(0, 20),
+            }
+          );
+        }
+      }
+      if (excludeCollectionTitles.length > 0) {
+        logger.info('Applying collection exclusions to filtered hub', {
+          label: 'Filtered Hub Collections',
+          configName: config.name,
+          excludedCollections: excludeCollectionTitles,
+        });
+      } else {
+        logger.warn(
+          'No exclusions resolved — filtered hub URI will be rebuilt without exclusions',
+          {
+            label: 'Filtered Hub Collections',
+            configName: config.name,
+            excludeFromCollections: config.excludeFromCollections,
+          }
+        );
+      }
+    }
+
     // Check if smart collection already exists
     // Define custom label for this collection
     const customLabel = `Agregarr-filtered_hub-${config.id}`;
@@ -252,7 +330,8 @@ export class FilteredHubCollectionSync extends BaseCollectionSync<'filtered_hub'
         config.libraryId,
         mediaType,
         subtype,
-        config.maxItems
+        config.maxItems,
+        excludeCollectionTitles.length > 0 ? excludeCollectionTitles : undefined
       );
 
       logger.info('Updated filtered hub smart collection URI', {
@@ -281,7 +360,8 @@ export class FilteredHubCollectionSync extends BaseCollectionSync<'filtered_hub'
         config.libraryId,
         mediaType,
         subtype,
-        config.maxItems
+        config.maxItems,
+        excludeCollectionTitles.length > 0 ? excludeCollectionTitles : undefined
       );
 
       if (!smartCollectionKey) {

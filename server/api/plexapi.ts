@@ -424,8 +424,9 @@ class PlexAPI {
     } = {}
   ): Promise<{ totalSize: number; items: PlexLibraryItem[] }> {
     const typeId = type === 'movie' ? 1 : type === 'show' ? 2 : 3;
-    const uri = `/library/sections/${id}/all?includeGuids=1&includeChildren=1${type ? `&type=${typeId}` : ''
-      }`;
+    const uri = `/library/sections/${id}/all?includeGuids=1&includeChildren=1${
+      type ? `&type=${typeId}` : ''
+    }`;
 
     const headers = {
       'X-Plex-Container-Start': `${offset}`,
@@ -450,7 +451,8 @@ class PlexAPI {
     options: { includeChildren?: boolean } = {}
   ): Promise<PlexMetadata> {
     const response = await this.plexClient.query<PlexMetadataResponse>(
-      `/library/metadata/${key}${options.includeChildren ? '?includeChildren=1' : ''
+      `/library/metadata/${key}${
+        options.includeChildren ? '?includeChildren=1' : ''
       }`
     );
 
@@ -631,8 +633,9 @@ class PlexAPI {
     mediaType: 'movie' | 'show'
   ): Promise<PlexLibraryItem[]> {
     const response = await this.plexClient.query<PlexLibraryResponse>({
-      uri: `/library/sections/${id}/all?type=${mediaType === 'show' ? '2' : '1'
-        }&sort=addedAt%3Adesc&addedAt>>=${Math.floor(options.addedAt / 1000)}`,
+      uri: `/library/sections/${id}/all?type=${
+        mediaType === 'show' ? '2' : '1'
+      }&sort=addedAt%3Adesc&addedAt>>=${Math.floor(options.addedAt / 1000)}`,
       extraHeaders: {
         'X-Plex-Container-Start': `0`,
         'X-Plex-Container-Size': `500`,
@@ -743,7 +746,8 @@ class PlexAPI {
       });
       // Throw error to distinguish from "collection not found"
       throw new Error(
-        `API error getting collection metadata: ${error instanceof Error ? error.message : 'Unknown error'
+        `API error getting collection metadata: ${
+          error instanceof Error ? error.message : 'Unknown error'
         }`
       );
     }
@@ -945,15 +949,16 @@ class PlexAPI {
         libraryKey,
         mediaType,
         typeParam: mediaType === 'tv' ? 2 : 1,
-        createUrl: `/library/collections?type=${mediaType === 'tv' ? 2 : 1
-          }&title=${encodeURIComponent(title)}&smart=0&sectionId=${libraryKey}`,
+        createUrl: `/library/collections?type=${
+          mediaType === 'tv' ? 2 : 1
+        }&title=${encodeURIComponent(title)}&smart=0&sectionId=${libraryKey}`,
         error:
           error instanceof Error
             ? {
-              message: error.message,
-              stack: error.stack,
-              name: error.name,
-            }
+                message: error.message,
+                stack: error.stack,
+                name: error.name,
+              }
             : error,
       });
       return null;
@@ -1327,20 +1332,28 @@ class PlexAPI {
     title: string,
     libraryKey?: string
   ): Promise<void> {
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) {
+      logger.warn(
+        `Skipping empty title update for collection ${collectionRatingKey}`,
+        { label: 'Plex API', collectionRatingKey }
+      );
+      return;
+    }
     try {
       // Use the correct Plex API endpoint for editing collection metadata
       // Collections require PUT /library/sections/{libraryKey}/all with type=18
       // The old endpoint /library/metadata/{ratingKey} doesn't reliably update collection titles
       if (libraryKey) {
         const editUrl = `/library/sections/${libraryKey}/all?type=18&id=${collectionRatingKey}&title.value=${encodeURIComponent(
-          title
+          normalizedTitle
         )}&title.locked=1`;
         await this.safePutQuery(editUrl);
       } else {
         // Fallback to old method if libraryKey not provided (for backwards compatibility)
         // This may not work reliably for collections
         const params = {
-          'title.value': title,
+          'title.value': normalizedTitle,
         };
 
         const queryString = Object.entries(params)
@@ -1544,12 +1557,12 @@ class PlexAPI {
         }
       }
 
-      // Check if label exists (case-insensitive)
-      const labelIndex = existingLabels.findIndex(
-        (existingLabel) => existingLabel.toLowerCase() === label.toLowerCase()
+      // Remove ALL case-insensitive matches (handles duplicates with different casing)
+      const updatedLabels = existingLabels.filter(
+        (existingLabel) => existingLabel.toLowerCase() !== label.toLowerCase()
       );
 
-      if (labelIndex === -1) {
+      if (updatedLabels.length === existingLabels.length) {
         logger.debug('Label does not exist on item, nothing to remove', {
           label: 'Plex API',
           ratingKey,
@@ -1557,11 +1570,6 @@ class PlexAPI {
         });
         return;
       }
-
-      // Remove the label from the array
-      const updatedLabels = existingLabels.filter(
-        (_, index) => index !== labelIndex
-      );
 
       // Build params with remaining labels
       const params: Record<string, string> = {};
@@ -1573,8 +1581,8 @@ class PlexAPI {
       const queryString =
         updatedLabels.length > 0
           ? Object.entries(params)
-            .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
-            .join('&')
+              .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+              .join('&')
           : 'label[0].tag.tag-=';
 
       const editUrl = `/library/metadata/${ratingKey}?${queryString}`;
@@ -2357,8 +2365,9 @@ class PlexAPI {
             }[];
           };
         }>({
-          uri: `/library/sections/${libraryId}/all?includeGuids=1${type ? `&type=${type}` : ''
-            }`,
+          uri: `/library/sections/${libraryId}/all?includeGuids=1${
+            type ? `&type=${type}` : ''
+          }`,
           extraHeaders: {
             'X-Plex-Container-Start': `${offset}`,
             'X-Plex-Container-Size': `${pageSize}`,
@@ -2595,14 +2604,16 @@ class PlexAPI {
       | 'recently_added'
       | 'recently_released'
       | 'recently_released_episodes',
-    maxItems?: number
+    maxItems?: number,
+    excludeCollectionTitles?: string[]
   ): Promise<void> {
     return this.smartCollectionManager.updateFilteredHubUri(
       smartCollectionRatingKey,
       libraryKey,
       mediaType,
       subtype,
-      maxItems
+      maxItems,
+      excludeCollectionTitles
     );
   }
 
@@ -2981,8 +2992,8 @@ class PlexAPI {
         uri,
         extraHeaders: limit
           ? {
-            'X-Plex-Container-Size': `${limit}`,
-          }
+              'X-Plex-Container-Size': `${limit}`,
+            }
           : undefined,
       });
 
@@ -3028,8 +3039,8 @@ class PlexAPI {
         uri,
         extraHeaders: limit
           ? {
-            'X-Plex-Container-Size': `${limit}`,
-          }
+              'X-Plex-Container-Size': `${limit}`,
+            }
           : undefined,
       });
 

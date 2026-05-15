@@ -179,33 +179,12 @@ export class CollectionSyncService {
             // Cleanup triggers when needsTitleFix is false (real content detected via Plex OR *arr)
             // This works even without a plexItem (content downloaded to different library)
             if (!needsTitleFix && marker.tmdbId) {
-              // Real content detected - clean up placeholder
-              if (plexItem) {
-                try {
-                  await plexClient.removeLabelFromItem(
-                    plexItem.ratingKey,
-                    'trailer-placeholder'
-                  );
-                } catch (error) {
-                  logger.warn(
-                    'Failed to remove placeholder label, deferring cleanup',
-                    {
-                      label: 'Collection Sync Service',
-                      title: marker.title,
-                      ratingKey: plexItem.ratingKey,
-                      error:
-                        error instanceof Error
-                          ? error.message
-                          : 'Unknown error',
-                    }
-                  );
-                  continue;
-                }
-              }
               await cleanupPlaceholderForRealContent(
                 marker.tmdbId,
                 marker.placeholderPath,
-                'tv'
+                'tv',
+                plexClient,
+                plexItem?.ratingKey
               );
               cleanedUp++;
             } else if (needsTitleFix && plexItem) {
@@ -390,33 +369,12 @@ export class CollectionSyncService {
             // Cleanup triggers when needsCleanup is true (real content detected via Plex OR *arr)
             // This works even without a plexItem (content downloaded to different library)
             if (needsCleanup) {
-              // Real content detected - clean up placeholder
-              if (plexItem) {
-                try {
-                  await plexClient.removeLabelFromItem(
-                    plexItem.ratingKey,
-                    'trailer-placeholder'
-                  );
-                } catch (error) {
-                  logger.warn(
-                    'Failed to remove placeholder label, deferring cleanup',
-                    {
-                      label: 'Collection Sync Service',
-                      title: movie.title,
-                      ratingKey: plexItem.ratingKey,
-                      error:
-                        error instanceof Error
-                          ? error.message
-                          : 'Unknown error',
-                    }
-                  );
-                  continue;
-                }
-              }
               await cleanupPlaceholderForRealContent(
                 movie.tmdbId,
                 movie.placeholderPath,
-                'movie'
+                'movie',
+                plexClient,
+                plexItem?.ratingKey
               );
               moviesCleanedUp++;
             } else if (plexItem) {
@@ -643,8 +601,18 @@ export class CollectionSyncService {
       ReturnType<PlexAPI['getAllCollections']>
     > | null = null;
 
-    // Process each collection config directly
-    for (const config of collectionConfigs) {
+    // Process filtered hubs last so excluded collections have final titles in Plex.
+    // collection!= uses exact string matching — title drift breaks exclusions.
+    const regularConfigs = collectionConfigs.filter(
+      (c) => c.type !== 'filtered_hub'
+    );
+    const filteredHubConfigs = collectionConfigs.filter(
+      (c) => c.type === 'filtered_hub'
+    );
+    const orderedConfigs = [...regularConfigs, ...filteredHubConfigs];
+    let refreshedForFilteredHubs = false;
+
+    for (const config of orderedConfigs) {
       if (this.cancelled) break;
 
       try {
@@ -683,6 +651,21 @@ export class CollectionSyncService {
             }
           );
         } else {
+          // Force-refresh cache once before filtered hub phase so exclusion title
+          // resolution reads post-sync titles. Title updates don't set mutated=true.
+          if (
+            config.type === 'filtered_hub' &&
+            !refreshedForFilteredHubs &&
+            cachedAllCollections !== null
+          ) {
+            cachedAllCollections = null;
+            refreshedForFilteredHubs = true;
+            logger.debug(
+              'Invalidating getAllCollections cache before filtered hub phase',
+              { label: 'Collection Sync Service' }
+            );
+          }
+
           // Use cached collections list, re-fetching only when stale
           if (!cachedAllCollections) {
             logger.debug('Fetching getAllCollections from Plex API', {
@@ -828,7 +811,7 @@ export class CollectionSyncService {
             );
           }
 
-          // Check if the sync returned an error (e.g., from multi-source orchestrator)
+          // Check if the sync returned an error or warning
           if (result.error) {
             logger.warn(
               `Collection sync returned error for ${config.name}: ${result.error}`,
@@ -837,10 +820,20 @@ export class CollectionSyncService {
                 configId: config.id,
               }
             );
-            // Persist error for UI display
+            // Persist error for UI display — keeps needsSync=true
             settings.setCollectionSyncError(config.id, result.error);
+          } else if (result.warning) {
+            logger.info(
+              `Collection sync completed with warning for ${config.name}: ${result.warning}`,
+              {
+                label: 'Collection Sync Service',
+                configId: config.id,
+              }
+            );
+            // Synced successfully but with issues — mark synced, persist warning
+            settings.setCollectionSyncWarning(config.id, result.warning);
           } else {
-            // Mark collection as successfully synced (clears any previous error)
+            // Mark collection as successfully synced (clears any previous error/warning)
             settings.markCollectionSynced(config.id, 'collection');
           }
         }
@@ -863,11 +856,14 @@ export class CollectionSyncService {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`Failed to process collection ${config.name}: ${errorMessage}`, {
-          label: 'Collection Sync Service',
-          configId: config.id,
-          error: errorMessage,
-        });
+        logger.error(
+          `Failed to process collection ${config.name}: ${errorMessage}`,
+          {
+            label: 'Collection Sync Service',
+            configId: config.id,
+            error: errorMessage,
+          }
+        );
 
         // Persist error for UI display
         settings.setCollectionSyncError(config.id, errorMessage);

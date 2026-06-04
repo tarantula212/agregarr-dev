@@ -7,6 +7,10 @@ import logger from '@server/logger';
  */
 class OverlayApplication {
   public running = false;
+  // Set while waiting for other jobs to finish, before real work begins.
+  // Kept separate from `running` so the cross-job wait loops never see a
+  // merely-queued job as active (that would deadlock with Collections Sync).
+  public pending = false;
   private cancelled = false;
 
   // Progress tracking
@@ -17,6 +21,7 @@ class OverlayApplication {
   public get status() {
     return {
       running: this.running,
+      pending: this.pending,
       cancelled: this.cancelled,
       currentStage: this.currentStage,
       totalLibraries: this.totalLibraries,
@@ -55,18 +60,26 @@ class OverlayApplication {
   }
 
   public async run(): Promise<void> {
-    if (this.running) {
+    if (this.running || this.pending) {
       logger.warn('Overlay application is already running', {
         label: 'Overlay Application',
       });
       return;
     }
 
+    // Mark pending (not running) so the UI shows the waiting state without the
+    // cross-job wait loops below treating this job as active. `running` is set
+    // only once all the waits clear (see below) to avoid a mutual deadlock with
+    // Collections Sync, which waits on overlayApplication.status.running.
+    this.pending = true;
+    this.cancelled = false;
+
     // Safety check: don't run if base poster download is in progress
     const { plexBasePosterDownloadJob } = await import(
       '@server/lib/overlays/PlexBasePosterDownloadJob'
     );
     if (plexBasePosterDownloadJob.running) {
+      this.pending = false;
       throw new Error(
         'Cannot run overlay application while base posters are being downloaded. ' +
           'Please wait for the download to complete.'
@@ -83,9 +96,14 @@ class OverlayApplication {
           label: 'Overlay Application',
         }
       );
-      while (overlaysQuickSync.status.running) {
+      while (overlaysQuickSync.status.running && !this.cancelled) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
+    }
+
+    if (this.cancelled) {
+      this.pending = false;
+      return;
     }
 
     // Wait for Collections Sync to complete if running
@@ -98,12 +116,22 @@ class OverlayApplication {
           label: 'Overlay Application',
         }
       );
-      while (collectionsSync.status.running) {
+      while (collectionsSync.status.running && !this.cancelled) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      logger.info('Collections Sync completed, starting Overlay Application', {
-        label: 'Overlay Application',
-      });
+      if (!this.cancelled) {
+        logger.info(
+          'Collections Sync completed, starting Overlay Application',
+          {
+            label: 'Overlay Application',
+          }
+        );
+      }
+    }
+
+    if (this.cancelled) {
+      this.pending = false;
+      return;
     }
 
     // Wait for any per-library overlay syncs to complete
@@ -119,17 +147,27 @@ class OverlayApplication {
           runningLibraries: runningLibraries.map((l) => l.libraryName),
         }
       );
-      while (runningLibraries.length > 0) {
+      while (runningLibraries.length > 0 && !this.cancelled) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         runningLibraries = overlayLibraryService.getAllRunningLibraries();
       }
-      logger.info('Per-library overlay syncs completed, starting full sync', {
-        label: 'Overlay Application',
-      });
+      if (!this.cancelled) {
+        logger.info('Per-library overlay syncs completed, starting full sync', {
+          label: 'Overlay Application',
+        });
+      }
     }
 
+    if (this.cancelled) {
+      this.pending = false;
+      return;
+    }
+
+    // All cross-job waits have cleared: claim the running state now. Setting it
+    // here (rather than at the top of run()) is what prevents the deadlock with
+    // Collections Sync while still gating dependent jobs during real work.
     this.running = true;
-    this.cancelled = false;
+    this.pending = false;
     this.currentStage = '';
     this.totalLibraries = 0;
     this.processedLibraries = 0;
@@ -222,6 +260,7 @@ class OverlayApplication {
       throw error;
     } finally {
       this.running = false;
+      this.pending = false;
       this.cancelled = false;
       this.currentStage = '';
     }

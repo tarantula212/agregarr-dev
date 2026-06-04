@@ -1100,10 +1100,15 @@ export class TmdbCollectionSync extends BaseCollectionSync<'tmdb'> {
           libraryCache
         );
         if (!randomResult) {
-          throw this.createSyncError(
-            CollectionSyncErrorType.CONFIGURATION_ERROR,
-            `No random TMDB collections available with ${mediaType} content`
+          logger.warn(
+            `No random TMDB collections available with ${mediaType} content`,
+            {
+              label: 'TMDB Collections',
+              collection: config.name,
+              mediaType,
+            }
           );
+          return tmdbData;
         }
 
         const { url: randomUrl, title: listTitle } = randomResult;
@@ -1644,13 +1649,23 @@ export class TmdbCollectionSync extends BaseCollectionSync<'tmdb'> {
           });
           collectionApiCalls++;
 
-          // Extract movies from collection (already sorted by TMDB)
+          // Extract movies from collection and sort by release date
+          // (TMDB parts order is not guaranteed to be release-date order)
           const movies =
             collectionData.parts?.map((part) => ({
               tmdbId: part.id,
               title: part.title || 'Unknown',
               releaseDate: part.release_date,
             })) || [];
+
+          movies.sort((a, b) => {
+            const dateA = a.releaseDate || '';
+            const dateB = b.releaseDate || '';
+            if (!dateA && !dateB) return 0;
+            if (!dateA) return 1;
+            if (!dateB) return -1;
+            return dateA.localeCompare(dateB);
+          });
 
           // Mark all movies in this franchise as processed to avoid redundant API calls
           for (const movie of movies) {
@@ -1662,7 +1677,7 @@ export class TmdbCollectionSync extends BaseCollectionSync<'tmdb'> {
             franchiseName: collectionData.name,
             franchisePosterPath: collectionData.poster_path,
             franchiseBackdropPath: collectionData.backdrop_path,
-            movies, // Already in TMDB's order (release order)
+            movies,
           });
 
           logger.debug(
@@ -1831,12 +1846,41 @@ export class TmdbCollectionSync extends BaseCollectionSync<'tmdb'> {
         : undefined
     );
 
-    // Combine Plex items with any placeholder items
-    let finalItems = plexItems;
+    // Merge Plex items and placeholders in TMDB franchise order
+    let finalItems: CollectionItem[];
     if (placeholderItems.length > 0) {
-      finalItems = [...plexItems, ...placeholderItems];
+      const plexByTmdbId = new Map(
+        plexItems
+          .filter(
+            (item): item is CollectionItem & { tmdbId: number } =>
+              item.tmdbId != null
+          )
+          .map((item) => [item.tmdbId, item])
+      );
+      const placeholderByTmdbId = new Map(
+        placeholderItems
+          .filter(
+            (item): item is CollectionItem & { tmdbId: number } =>
+              item.tmdbId != null
+          )
+          .map((item) => [item.tmdbId, item])
+      );
+
+      finalItems = [];
+      for (const movie of franchiseData.movies) {
+        const plex = plexByTmdbId.get(movie.tmdbId);
+        if (plex) {
+          finalItems.push(plex);
+        } else {
+          const placeholder = placeholderByTmdbId.get(movie.tmdbId);
+          if (placeholder) {
+            finalItems.push(placeholder);
+          }
+        }
+      }
+
       logger.debug(
-        `Added ${placeholderItems.length} placeholder items to franchise ${collectionName}`,
+        `Merged ${placeholderItems.length} placeholder items into franchise ${collectionName} in TMDB order`,
         {
           label: 'TMDB Franchise',
           plexItems: plexItems.length,
@@ -1844,6 +1888,8 @@ export class TmdbCollectionSync extends BaseCollectionSync<'tmdb'> {
           total: finalItems.length,
         }
       );
+    } else {
+      finalItems = plexItems;
     }
 
     // Check if we should skip auto-poster generation
@@ -2001,8 +2047,7 @@ export class TmdbCollectionSync extends BaseCollectionSync<'tmdb'> {
       false
     );
 
-    // Convert to CollectionItem array, preserving TMDB franchise order
-    // CRITICAL: We must maintain the order from franchiseData.movies (release order)
+    // Convert to CollectionItem array, preserving franchiseData.movies order
     const items: CollectionItem[] = [];
     for (const movie of franchiseData.movies) {
       const key = `${movie.tmdbId}-movie`;

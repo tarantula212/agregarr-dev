@@ -1,4 +1,5 @@
 import PlexAPI from '@server/api/plexapi';
+import collectionSyncProgress from '@server/lib/collections/CollectionSyncProgress';
 import { extractErrorMessage } from '@server/lib/collections/core/CollectionUtilities';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
@@ -9,6 +10,10 @@ import { collectionSyncService } from './collections/services/CollectionSyncServ
 
 class CollectionsSync {
   public running = false;
+  // Set while waiting for other jobs to finish, before real work begins.
+  // Kept separate from `running` so the cross-job wait loops never see a
+  // merely-queued sync as active (that would deadlock with Overlay Application).
+  public pending = false;
   private cancelled = false;
   private cleanupService = new CollectionCleanupService();
 
@@ -20,6 +25,7 @@ class CollectionsSync {
   public get status() {
     return {
       running: this.running,
+      pending: this.pending,
       cancelled: this.cancelled,
       currentStage: this.currentStage,
       totalCollections: this.totalCollections,
@@ -50,6 +56,7 @@ class CollectionsSync {
 
   public cancel(): void {
     this.cancelled = true;
+    collectionSyncService.cancel();
   }
 
   /**
@@ -153,11 +160,19 @@ class CollectionsSync {
   }
 
   public async run(): Promise<void> {
+    // Mark pending (not running) so the UI shows the waiting state without the
+    // cross-job wait loops below treating this sync as active. `running` is set
+    // only once all the waits clear (see below) to avoid a mutual deadlock with
+    // Overlay Application, which waits on collectionsSync.status.running.
+    this.pending = true;
+    this.cancelled = false;
+
     // Check if discovery is running to prevent race conditions
     const { discoveryService } = await import(
       '@server/lib/collections/services/DiscoveryService'
     );
     if (discoveryService.status.running) {
+      this.pending = false;
       throw new Error(
         'Discovery is currently running. Please wait for discovery to complete before starting sync.'
       );
@@ -173,10 +188,14 @@ class CollectionsSync {
           label: 'Collections Sync',
         }
       );
-      // Wait for randomization to complete
-      while (randomizeHomeOrder.status.running) {
+      while (randomizeHomeOrder.status.running && !this.cancelled) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
+    }
+
+    if (this.cancelled) {
+      this.pending = false;
+      return;
     }
 
     // Wait for Collections Quick Sync to complete if running
@@ -190,9 +209,14 @@ class CollectionsSync {
           label: 'Collections Sync',
         }
       );
-      while (collectionsQuickSync.status.running) {
+      while (collectionsQuickSync.status.running && !this.cancelled) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
+    }
+
+    if (this.cancelled) {
+      this.pending = false;
+      return;
     }
 
     // Wait for Overlay Application to complete if running
@@ -205,12 +229,22 @@ class CollectionsSync {
           label: 'Collections Sync',
         }
       );
-      while (overlayApplication.status.running) {
+      while (overlayApplication.status.running && !this.cancelled) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      logger.info('Overlay Application completed, starting Collections Sync', {
-        label: 'Collections Sync',
-      });
+      if (!this.cancelled) {
+        logger.info(
+          'Overlay Application completed, starting Collections Sync',
+          {
+            label: 'Collections Sync',
+          }
+        );
+      }
+    }
+
+    if (this.cancelled) {
+      this.pending = false;
+      return;
     }
 
     // Wait for any running individual collection syncs to complete
@@ -241,45 +275,61 @@ class CollectionsSync {
       await IndividualCollectionScheduler.waitForIndividualSyncsToComplete();
     }
 
-    // Set running state immediately for UI feedback and prevent individual syncs
+    if (this.cancelled) {
+      this.pending = false;
+      return;
+    }
+
+    // All cross-job waits have cleared: claim the running state now. Setting it
+    // here (rather than at the top of run()) is what prevents the deadlock with
+    // Overlay Application while still gating individual syncs during real work.
     this.running = true;
-    this.cancelled = false;
+    this.pending = false;
     IndividualCollectionScheduler.setFullSyncRunning(true);
     this.setStage('Starting sync...');
 
     const settings = getSettings();
-
-    // Validate Plex configuration
-    if (!settings.plex.ip || !settings.plex.machineId) {
-      logger.error(
-        'Plex server configuration incomplete. Please check Plex settings.',
-        { label: 'Collections Sync' }
-      );
-      return;
-    }
-
-    // Get admin user for Plex token
-    // Check local admin user for Plex token (not external Overseerr)
-    const { getAdminUser } = await import(
-      '@server/lib/collections/core/CollectionUtilities'
-    );
-    const localAdmin = await getAdminUser();
-
-    if (!localAdmin?.plexToken) {
-      logger.warn(
-        'Collections sync skipped. No local admin Plex token found.',
-        {
-          label: 'Collections Sync',
-        }
-      );
-      return;
-    }
-
     const startTime = Date.now();
 
+    // Everything past the running claim runs inside try/finally so that an
+    // early return from the pre-flight validation below still releases the
+    // running / pending / full-sync flags (the finally block resets them).
     try {
+      // Initialize rich progress tracking (populated with total count later)
+      collectionSyncProgress.startSync(0);
+      collectionSyncProgress.setDetail('Starting sync...');
+
+      // Validate Plex configuration
+      if (!settings.plex.ip || !settings.plex.machineId) {
+        logger.error(
+          'Plex server configuration incomplete. Please check Plex settings.',
+          { label: 'Collections Sync' }
+        );
+        collectionSyncProgress.fail('Plex server configuration incomplete');
+        return;
+      }
+
+      // Get admin user for Plex token
+      // Check local admin user for Plex token (not external Overseerr)
+      const { getAdminUser } = await import(
+        '@server/lib/collections/core/CollectionUtilities'
+      );
+      const localAdmin = await getAdminUser();
+
+      if (!localAdmin?.plexToken) {
+        logger.warn(
+          'Collections sync skipped. No local admin Plex token found.',
+          {
+            label: 'Collections Sync',
+          }
+        );
+        collectionSyncProgress.fail('No local admin Plex token found');
+        return;
+      }
+
       // Initialize Plex client
       this.setStage('Connecting to Plex server...');
+      collectionSyncProgress.setDetail('Connecting to Plex server...');
       const plexClient = await this.getPlexClient();
 
       // Test connection
@@ -290,33 +340,32 @@ class CollectionsSync {
 
       // Refresh external service data for template variables
       this.setStage('Refreshing external data...');
+      collectionSyncProgress.setDetail('Refreshing external data...');
       await this.refreshExternalData(plexClient);
 
-      // Get collection count for progress tracking - only count actual agregarr collections
-      const settings = getSettings();
-      const agregarrCollections = settings.plex.collectionConfigs || [];
-      this.setStage('Processing collections...', agregarrCollections.length, 0);
+      // Transition to processing phase — total set by syncAllConfigurations
+      collectionSyncProgress.setPhase('processing');
 
       // Perform the sync operations using our new service
       const syncResult = await collectionSyncService.syncAllConfigurations(
         plexClient,
-        (processed: number, currentAction?: string) => {
+        (processed: number, currentAction?: string, total?: number) => {
+          const t = total ?? 0;
           if (currentAction) {
-            // Show detailed action for current collection
-            this.setStage(currentAction, agregarrCollections.length, processed);
+            this.setStage(currentAction, t, processed);
+            collectionSyncProgress.setDetail(currentAction);
           } else {
-            // Show general progress
-            this.setStage(
-              'Processing collections...',
-              agregarrCollections.length,
-              processed
-            );
+            this.setStage('Processing collections...', t, processed);
           }
         }
       );
 
+      // Transition to cleanup phase
+      collectionSyncProgress.setPhase('cleanup');
+
       // Sync hub visibility settings
       this.setStage('Syncing hub visibility settings...');
+      collectionSyncProgress.setDetail('Syncing hub visibility settings...');
       const { HubSyncService } = await import(
         './collections/plex/HubSyncService'
       );
@@ -327,16 +376,21 @@ class CollectionsSync {
 
       // Sync pre-existing collection sortTitles based on promotion status
       this.setStage('Updating collection sort titles...');
+      collectionSyncProgress.setDetail('Updating collection sort titles...');
       await hubSyncService.syncPreExistingCollectionSortTitles(plexClient);
 
       // Sync unified ordering (collections + hubs)
       this.setStage('Applying collection ordering to Plex...');
+      collectionSyncProgress.setDetail(
+        'Applying collection ordering to Plex...'
+      );
       await hubSyncService.syncUnifiedOrdering(plexClient, (stage: string) => {
         this.setStage(stage);
       });
 
       // Clean up orphaned collections after sync completes
       this.setStage('Cleaning up orphaned collections...');
+      collectionSyncProgress.setDetail('Cleaning up orphaned collections...');
       logger.info('Starting post-sync cleanup of orphaned collections', {
         label: 'Collections Sync',
       });
@@ -397,6 +451,7 @@ class CollectionsSync {
 
       // Clean up orphaned placeholder records and files
       this.setStage('Cleaning up orphaned placeholders...');
+      collectionSyncProgress.setDetail('Cleaning up orphaned placeholders...');
       let cleanupResult: {
         filesRemoved: number;
         deletedPaths: {
@@ -438,6 +493,7 @@ class CollectionsSync {
         this.setStage(
           'Removing stale Plex entries for deleted placeholders...'
         );
+        collectionSyncProgress.setDetail('Removing stale Plex entries...');
 
         const { cleanupStalePlexEntries } = await import(
           '@server/lib/placeholders/services/PlaceholderCleanup'
@@ -449,6 +505,7 @@ class CollectionsSync {
 
       // Run discovery to refresh missing warnings
       this.setStage('Refreshing collection status...');
+      collectionSyncProgress.setDetail('Refreshing collection status...');
       try {
         const { discoveryService } = await import(
           '@server/lib/collections/services/DiscoveryService'
@@ -472,6 +529,7 @@ class CollectionsSync {
       // Randomize home order for collections with randomizeHomeOrder enabled
       try {
         this.setStage('Randomizing home order...');
+        collectionSyncProgress.setDetail('Randomizing home order...');
         const randomizeHomeOrder = (
           await import('@server/lib/randomizeHomeOrder')
         ).default;
@@ -490,9 +548,14 @@ class CollectionsSync {
         durationMs: duration,
       });
 
-      // Mark global sync as completed successfully
-      this.setStage('Sync completed successfully');
-      settings.setGlobalSyncComplete();
+      if (this.cancelled) {
+        this.setStage('Sync cancelled');
+        collectionSyncProgress.cancel();
+      } else {
+        this.setStage('Sync completed successfully');
+        settings.setGlobalSyncComplete();
+        collectionSyncProgress.complete();
+      }
     } catch (error) {
       const errorMessage = extractErrorMessage(error);
       logger.error(`Collections sync failed: ${errorMessage}.`, {
@@ -501,8 +564,10 @@ class CollectionsSync {
 
       // Mark global sync error
       settings.setGlobalSyncError(errorMessage);
+      collectionSyncProgress.fail(errorMessage);
     } finally {
       this.running = false;
+      this.pending = false;
       this.cancelled = false;
 
       // Allow individual syncs to resume

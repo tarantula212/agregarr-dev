@@ -1721,6 +1721,12 @@ const CollectionFormConfigForm = ({
             (config as CollectionFormConfig).comingSoonRadarrTagIds ?? [],
           comingSoonSonarrTagIds:
             (config as CollectionFormConfig).comingSoonSonarrTagIds ?? [],
+          comingSoonRadarrRootFolder:
+            (config as CollectionFormConfig).comingSoonRadarrRootFolder ??
+            undefined,
+          comingSoonSonarrRootFolder:
+            (config as CollectionFormConfig).comingSoonSonarrRootFolder ??
+            undefined,
           // Direct download server selection
           directDownloadRadarrServerId:
             (config as CollectionFormConfig).directDownloadRadarrServerId ??
@@ -2289,6 +2295,14 @@ const CollectionFormConfigForm = ({
               values.comingSoonFilterByTags
                 ? values.comingSoonSonarrTagIds
                 : undefined,
+            comingSoonRadarrRootFolder:
+              values.type === 'comingsoon' && values.subtype === 'monitored'
+                ? values.comingSoonRadarrRootFolder
+                : undefined,
+            comingSoonSonarrRootFolder:
+              values.type === 'comingsoon' && values.subtype === 'monitored'
+                ? values.comingSoonSonarrRootFolder
+                : undefined,
             autoPoster: values.autoPoster,
             autoPosterTemplate: values.autoPosterTemplate,
             useTmdbFranchisePoster: values.useTmdbFranchisePoster,
@@ -2818,6 +2832,12 @@ const CollectionFormConfigForm = ({
                               return 'movie';
                             }
                             if (values.type === 'letterboxd') {
+                              return 'movie';
+                            }
+                            if (
+                              values.type === 'tmdb' &&
+                              values.subtype === 'random'
+                            ) {
                               return 'movie';
                             }
                             if (values.type === 'radarrtag') {
@@ -4842,6 +4862,15 @@ const CollectionFormConfigForm = ({
                         sonarrTagId: values.sonarrTagId,
                         radarrInstanceId: values.radarrInstanceId,
                         sonarrInstanceId: values.sonarrInstanceId,
+                        // Coming Soon specific fields
+                        comingSoonRadarrServerId:
+                          values.comingSoonRadarrServerId,
+                        comingSoonSonarrServerId:
+                          values.comingSoonSonarrServerId,
+                        comingSoonRadarrRootFolder:
+                          values.comingSoonRadarrRootFolder,
+                        comingSoonSonarrRootFolder:
+                          values.comingSoonSonarrRootFolder,
                         // Multi-source specific fields
                         isMultiSource: values.isMultiSource,
                         sources: values.sources as

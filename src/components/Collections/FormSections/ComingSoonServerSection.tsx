@@ -14,7 +14,7 @@ interface TagOption {
 const messages = defineMessages({
   comingSoonServerSettings: 'Monitored Source Settings',
   comingSoonServerSettingsHelp:
-    'Choose which Radarr/Sonarr server to pull monitored items from, and optionally filter by tags.',
+    'Choose which Radarr/Sonarr server to pull monitored items from, and optionally filter by tags or root folder.',
   selectRadarrServer: 'Radarr Server (Movies)',
   selectSonarrServer: 'Sonarr Server (TV Shows)',
   selectServer: 'Select server...',
@@ -29,6 +29,13 @@ const messages = defineMessages({
   selectTags: 'Select tags...',
   selectServerFirst: 'Select a server first',
   noTags: 'No tags available on this server.',
+  radarrRootFolder: 'Radarr Root Folder (Movies)',
+  sonarrRootFolder: 'Sonarr Root Folder (TV Shows)',
+  allRootFolders: 'All Root Folders',
+  radarrRootFolderHelp:
+    'Only include movies stored under this Radarr root folder. Leave on "All" if this library only has one root folder, or if you want movies from all paths.',
+  sonarrRootFolderHelp:
+    'Only include TV shows stored under this Sonarr root folder. Leave on "All" if this library only has one root folder, or if you want shows from all paths.',
 });
 
 interface ComingSoonServerSectionProps {
@@ -39,6 +46,8 @@ interface ComingSoonServerSectionProps {
     comingSoonTagMode?: 'include' | 'exclude';
     comingSoonRadarrTagIds?: number[];
     comingSoonSonarrTagIds?: number[];
+    comingSoonRadarrRootFolder?: string;
+    comingSoonSonarrRootFolder?: string;
     [key: string]: unknown;
   };
   setFieldValue?: (field: string, value: unknown) => void;
@@ -89,7 +98,7 @@ const ComingSoonServerSection = ({
     setFieldValue,
   ]);
 
-  // Effective server IDs (for fetching tags)
+  // Effective server IDs (for fetching tags and root folders)
   const effectiveRadarrServerId =
     values.comingSoonRadarrServerId !== undefined
       ? values.comingSoonRadarrServerId
@@ -117,6 +126,19 @@ const ComingSoonServerSection = ({
       : null
   );
 
+  // Fetch root folders for selected servers
+  const { data: radarrRootFolders } = useSWR<{ id: number; path: string }[]>(
+    effectiveRadarrServerId !== undefined
+      ? `/api/v1/settings/radarr/${effectiveRadarrServerId}/rootfolders`
+      : null
+  );
+
+  const { data: sonarrRootFolders } = useSWR<{ id: number; path: string }[]>(
+    effectiveSonarrServerId !== undefined
+      ? `/api/v1/settings/sonarr/${effectiveSonarrServerId}/rootfolders`
+      : null
+  );
+
   const radarrTagOptions: TagOption[] =
     radarrTags?.map((tag) => ({
       value: tag.id,
@@ -141,6 +163,9 @@ const ComingSoonServerSection = ({
   const hasSonarrTags = sonarrTagOptions.length > 0;
   const hasAnyTags = hasRadarrTags || hasSonarrTags;
 
+  const hasRadarrRootFolders = (radarrRootFolders?.length ?? 0) >= 1;
+  const hasSonarrRootFolders = (sonarrRootFolders?.length ?? 0) >= 1;
+
   const tagMode = values.comingSoonTagMode || 'include';
 
   return (
@@ -164,8 +189,9 @@ const ComingSoonServerSection = ({
                   ? Number(e.target.value)
                   : undefined;
                 setFieldValue?.('comingSoonRadarrServerId', serverId);
-                // Clear radarr tags when server changes
+                // Clear radarr tags and root folder when server changes
                 setFieldValue?.('comingSoonRadarrTagIds', []);
+                setFieldValue?.('comingSoonRadarrRootFolder', undefined);
               }}
             >
               <option value="">
@@ -179,6 +205,38 @@ const ComingSoonServerSection = ({
               ))}
             </Field>
           </div>
+        </div>
+      )}
+
+      {/* Radarr Root Folder */}
+      {hasRadarrRootFolders && (
+        <div>
+          <div className="mb-2 text-sm font-medium text-gray-300">
+            {intl.formatMessage(messages.radarrRootFolder)}
+          </div>
+          <div className="form-input-field">
+            <select
+              value={values.comingSoonRadarrRootFolder ?? ''}
+              onChange={(e) => {
+                setFieldValue?.(
+                  'comingSoonRadarrRootFolder',
+                  e.target.value || undefined
+                );
+              }}
+            >
+              <option value="">
+                {intl.formatMessage(messages.allRootFolders)}
+              </option>
+              {radarrRootFolders?.map((folder) => (
+                <option key={folder.id} value={folder.path}>
+                  {folder.path}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            {intl.formatMessage(messages.radarrRootFolderHelp)}
+          </p>
         </div>
       )}
 
@@ -197,8 +255,9 @@ const ComingSoonServerSection = ({
                   ? Number(e.target.value)
                   : undefined;
                 setFieldValue?.('comingSoonSonarrServerId', serverId);
-                // Clear sonarr tags when server changes
+                // Clear sonarr tags and root folder when server changes
                 setFieldValue?.('comingSoonSonarrTagIds', []);
+                setFieldValue?.('comingSoonSonarrRootFolder', undefined);
               }}
             >
               <option value="">
@@ -212,6 +271,38 @@ const ComingSoonServerSection = ({
               ))}
             </Field>
           </div>
+        </div>
+      )}
+
+      {/* Sonarr Root Folder */}
+      {hasSonarrRootFolders && (
+        <div>
+          <div className="mb-2 text-sm font-medium text-gray-300">
+            {intl.formatMessage(messages.sonarrRootFolder)}
+          </div>
+          <div className="form-input-field">
+            <select
+              value={values.comingSoonSonarrRootFolder ?? ''}
+              onChange={(e) => {
+                setFieldValue?.(
+                  'comingSoonSonarrRootFolder',
+                  e.target.value || undefined
+                );
+              }}
+            >
+              <option value="">
+                {intl.formatMessage(messages.allRootFolders)}
+              </option>
+              {sonarrRootFolders?.map((folder) => (
+                <option key={folder.id} value={folder.path}>
+                  {folder.path}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            {intl.formatMessage(messages.sonarrRootFolderHelp)}
+          </p>
         </div>
       )}
 

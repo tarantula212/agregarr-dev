@@ -1,12 +1,13 @@
 import LoadingSpinner from '@app/components/Common/LoadingSpinner';
 import PageTitle from '@app/components/Common/PageTitle';
+import CollectionStatsGrid from '@app/components/Dashboard/CollectionStatsGrid';
+import CollectionSyncCard from '@app/components/Dashboard/CollectionSyncCard';
+import DashboardStats from '@app/components/Dashboard/DashboardStats';
+import MissingItemsFeed from '@app/components/Dashboard/MissingItemsFeed';
+import OverlaySyncCard from '@app/components/Dashboard/OverlaySyncCard';
 import { Permission, useUser } from '@app/hooks/useUser';
 import type { NextPage } from 'next';
 import { defineMessages, useIntl } from 'react-intl';
-import CollectionStatsGrid from '@app/components/Dashboard/CollectionStatsGrid';
-import DashboardStats from '@app/components/Dashboard/DashboardStats';
-import MissingItemsFeed from '@app/components/Dashboard/MissingItemsFeed';
-import RunningJobsCard from '@app/components/Dashboard/RunningJobsCard';
 
 const messages = defineMessages({
   dashboardTitle: 'Dashboard',
@@ -49,8 +50,11 @@ const DashboardPage: NextPage = () => {
       </div>
 
       <div className="space-y-6">
-        {/* Running Jobs - shown at top when jobs are active */}
-        <RunningJobsCard />
+        {/* Sync Status Cards - side by side */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <OverlaySyncCard />
+          <CollectionSyncCard />
+        </div>
 
         {/* Overview Stats */}
         <DashboardStats />

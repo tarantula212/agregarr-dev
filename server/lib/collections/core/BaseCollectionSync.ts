@@ -1455,6 +1455,15 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
           // UPDATE PATH: Collection exists (and is regular collection)
           collectionRatingKey = existingCollection.ratingKey;
 
+          // Set custom sort BEFORE updating contents — updateCollectionContents
+          // calls arrangeCollectionItemsInOrder internally, which reads item order
+          // from Plex. Without custom sort, Plex returns release-date order,
+          // causing the arrangement to operate against the wrong baseline.
+          await plexClient.updateCollectionContentSort(
+            collectionRatingKey,
+            'custom'
+          );
+
           // Smart update: add new items, remove old ones
           const updateResult = await plexClient.updateCollectionContents(
             collectionRatingKey,
@@ -1636,6 +1645,7 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
       // First, try to find collection by stored ratingKey if available
       // This is more reliable than label matching for all single collections
       // Skip for multi-collection patterns (one config generates multiple collections)
+      let ratingKeyWasStale = false;
       const isMultiCollectionPattern =
         (config?.type === 'overseerr' && config?.subtype === 'users') ||
         (config?.type === 'tmdb' && config?.subtype === 'auto_franchise');
@@ -1644,7 +1654,9 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
           const existingByRatingKey = await plexClient.getCollectionMetadata(
             config.collectionRatingKey
           );
-          if (existingByRatingKey) {
+          if (!existingByRatingKey) {
+            ratingKeyWasStale = true;
+          } else {
             // CRITICAL: Validate that the found collection is in the correct library
             // This prevents linked configs from stealing each other's rating keys
             const collectionLibraryKey =
@@ -1663,6 +1675,7 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
                   configName: config.name,
                 }
               );
+              ratingKeyWasStale = true;
             } else {
               logger.debug(
                 `Found existing collection by stored ratingKey: ${existingByRatingKey.title}`,
@@ -1692,6 +1705,7 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
               error: error instanceof Error ? error.message : String(error),
             }
           );
+          ratingKeyWasStale = true;
         }
       }
 
@@ -1811,6 +1825,22 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
               labels: matchedCollection.labels,
             }
           );
+
+          // Self-heal: persist the correct ratingKey when the stored one was stale
+          if (ratingKeyWasStale && config?.id && config.libraryId) {
+            logger.info(
+              `Self-healing stale ratingKey for "${config.name}": ${config.collectionRatingKey} → ${matchedCollection.collection.ratingKey}`,
+              { label: 'Base Collection Sync' }
+            );
+            const libraryId = Array.isArray(config.libraryId)
+              ? config.libraryId[0]
+              : config.libraryId;
+            updateConfigWithRatingKey(
+              config.id,
+              matchedCollection.collection.ratingKey,
+              libraryId
+            );
+          }
 
           return {
             ratingKey: matchedCollection.collection.ratingKey,

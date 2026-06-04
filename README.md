@@ -6,7 +6,7 @@ Active fork of [Agregarr](https://github.com/agregarr/agregarr) packaging perfor
 
 Available on Docker Hub as [`bitr8/agregarr`](https://hub.docker.com/r/bitr8/agregarr). `develop` and `latest` tags are identical — both track the develop branch with all fork features included. Rebuilds on every push.
 
-**amd64 only** — no arm64/Apple Silicon builds.
+**Multi-arch** — supports amd64 and arm64 (Apple Silicon, Raspberry Pi 4+).
 
 **Switching from upstream?** Replace the image line in your existing compose file — config volumes are compatible:
 
@@ -28,41 +28,51 @@ services:
       - /path/to/placeholder/tv:/data/tv # Optional: Coming Soon
     environment:
       - TZ=Australia/Sydney
+      - PUID=1000 # Your host user ID (run `id -u`)
+      - PGID=1000 # Your host group ID (run `id -g`)
+      - UMASK=022
     ports:
       - 7171:7171
     restart: unless-stopped
 ```
 
+> [!WARNING]
+>
+> **File permissions:** You must set `PUID` and `PGID` to match the user that owns your media directories. Without these, the container runs as root and creates directories with restrictive permissions — which breaks imports in Sonarr, Radarr, and other apps that run as a non-root user. On Unraid, use `PUID=99` and `PGID=100`.
+
 For general Agregarr configuration (services, collections, overlays etc.), see the [upstream docs](https://agregarr.org/docs/installation) — note that they reference the upstream image, not this fork.
 
 ## Relationship to upstream
 
-This fork tracks upstream Agregarr and stays GPL-3.0. Changes that fit upstream go back as PRs (46 merged, 7 open). Fork-only features are documented separately — they rely on behaviour or trade-offs upstream may not want to adopt.
+This fork tracks upstream Agregarr and stays GPL-3.0. Changes that fit upstream go back as PRs (46 merged, 11 open). Fork-only features are documented separately — they rely on behaviour or trade-offs upstream may not want to adopt.
 
 ## Fork-Only Features
 
-Two problem areas drove most of these changes: sync performance at scale (40+ collections, 10k+ items) and placeholder lifecycle gaps that leave orphaned entries in Plex.
+Two problem areas drove most of these changes: sync performance at scale (40+ collections, 10k+ items) and placeholder lifecycle gaps that leave orphaned entries in Plex. Early groundwork for Jellyfin support is underway.
 
-### Real-time Overlay Job Progress
+### Dashboard Sync Progress Cards
 
-Overlay jobs on large libraries can run 30+ minutes with no feedback. This adds live dashboard status showing progress, item counts, ETA, and a stop button for each library.
+Both collection and overlay syncs get unified side-by-side dashboard cards with live progress, stats, ETA, and start/stop controls. Cards are sticky -- they show last completed results when idle, and display "Waiting for..." when queued behind another job.
 
-![Overlay Jobs Status](public/images/overlay-jobs-status.png)
+![Collection Sync Dashboard](public/images/collection-sync-dashboard.png)
 
 ### Performance
 
 Upstream Agregarr makes individual API calls per item, per rating source, per cache miss. With 40+ collections and 10k+ items, syncs take hours and hammer external APIs. These changes reduce that to minutes.
 
-| Fix                           | Why                                                  | Impact                                                 |
-| ----------------------------- | ---------------------------------------------------- | ------------------------------------------------------ |
-| **Batch IMDb Prefetch**       | Upstream fetches IMDb ratings one item at a time     | Thousands of API calls reduced to tens                 |
-| **Adaptive TTL Caching**      | All cached ratings expire at the same fixed interval | New releases: 12h, older content: up to 30 days        |
-| **Configurable Rating Cache** | No way to tune cache duration                        | `ratingsCacheMaxDays` in settings.json (default: 30)   |
-| **Collection Sync Cache**     | `getAllCollections()` called on every loop iteration | Cached with mutation-based invalidation. Saves ~25-30s |
-| **Batch Overlay Metadata**    | Plex metadata fetched one item at a time             | Batches of 200 per API call. Falls back on failure     |
-| **AniList Retry Cap**         | `parseInt` NaN bug causes infinite tight retry loops | Capped at 5 attempts                                   |
-| **Release Date TTL Cap**      | Stale cache shows wrong overlay for new releases     | Items within 3 days of release: max 2h TTL             |
-| **Sync Status Fix**           | Large multi-source collections stuck as "pending"    | Partial source failures no longer block sync status    |
+| Fix                             | Why                                                   | Impact                                                 |
+| ------------------------------- | ----------------------------------------------------- | ------------------------------------------------------ |
+| **Batch IMDb Prefetch**         | Upstream fetches IMDb ratings one item at a time      | Thousands of API calls reduced to tens                 |
+| **Adaptive TTL Caching**        | All cached ratings expire at the same fixed interval  | New releases: 12h, older content: up to 30 days        |
+| **Configurable Rating Cache**   | No way to tune cache duration                         | `ratingsCacheMaxDays` in settings.json (default: 30)   |
+| **Collection Sync Cache**       | `getAllCollections()` called on every loop iteration  | Cached with mutation-based invalidation. Saves ~25-30s |
+| **Batch Overlay Metadata**      | Plex metadata fetched one item at a time              | Batches of 200 per API call. Falls back on failure     |
+| **FlixPatrol CloudflareSolver** | Hardcoded browser-spoofing headers stopped working    | Uses Playwright-based solver, same as Letterboxd       |
+| **WAF Solver Timeout Fix**      | IMDb pages never reach `networkidle`, WAF solve hangs | Uses `/chart/top/` for token acquisition, `load` wait  |
+| **AniList Retry Cap**           | `parseInt` NaN bug causes infinite tight retry loops  | Capped at 5 attempts                                   |
+| **Release Date TTL Cap**        | Stale cache shows wrong overlay for new releases      | Items within 3 days of release: max 2h TTL             |
+| **Sync Status Fix**             | Large multi-source collections stuck as "pending"     | Partial source failures no longer block sync status    |
+| **TMDB Random Graceful Fail**   | No random collection throws, blocks entire sync       | Warns and skips, existing collection preserved         |
 
 **Persistent TMDB Resolution Cache** -- Letterboxd collections require resolving titles to TMDB IDs. Upstream re-resolves every item on every sync (6 TMDB API calls each). This caches results in SQLite with adaptive TTL.
 
@@ -80,17 +90,31 @@ Upstream Agregarr makes individual API calls per item, per rating source, per ca
 | 142 pages         | ~25 min    | ~40 sec    |
 | Cloudflare blocks | 0          | 0          |
 
-To enable, add to `settings.json`:
+To enable, **stop the container first**, then add to `settings.json`:
 
 ```json
 {
-  "main": {
+  "plex": {
     "letterboxdUsePlainHttp": true
   }
 }
 ```
 
 Defaults to `false` (Playwright) for safety. Flip back if Cloudflare starts blocking.
+
+**Plain HTTP for FlixPatrol** (`flixpatrolUsePlainHttp`) -- Same approach as Letterboxd. FlixPatrol top 10 pages return full HTML without Cloudflare challenges. Applies to all 3 fetch paths (platform top 10, country list, platform discovery).
+
+To enable, **stop the container first**, then add to `settings.json`:
+
+```json
+{
+  "plex": {
+    "flixpatrolUsePlainHttp": true
+  }
+}
+```
+
+Defaults to `false` (Playwright) for safety. **Agregarr overwrites `settings.json` while running** — edits made to a live container will be lost on next save.
 
 ### Placeholder Lifecycle Fixes
 
@@ -114,12 +138,25 @@ Upstream placeholder cleanup has gaps that leave orphaned entries in Plex and do
 
 **TV Placeholder Real Content Detection** -- Upstream's TV placeholder discovery never checks whether real content has arrived — when a Plex item exists for a marker, it always keeps it as a placeholder. Movies have this detection, but TV skips it entirely. This fork adds the same Plex metadata check: if the show has Season 1+ alongside Season 00, cleanup triggers. Sonarr download status is a secondary signal. Also fixes a truthy-empty-array bug where `Metadata || Directory` picks an empty array over a populated one, and makes label removal best-effort so transient Plex errors don't block cleanup.
 
+### Coming Soon Improvements
+
+**Prefer \*arr Release Dates** -- Upstream's TMDB enrichment unconditionally overwrites Radarr/Sonarr release dates, even when the \*arr source has more accurate data for monitored content. This fork preserves \*arr dates and only backfills from TMDB when a field is missing (e.g., Radarr has `digitalRelease` but no `physicalRelease`, TMDB fills the gap). Scoped to \*arr-sourced items only -- Trakt, TMDB, and Letterboxd sources still get TMDB dates as before. Logs a warning when \*arr and TMDB dates diverge by more than a week, so stale Radarr entries are visible in the logs.
+
+**Announced Movies Without Dates** -- Upstream silently drops Radarr movies that have no release date fields at all (common for early announcements with `status: announced`). These items never reach TMDB enrichment, so TMDB can't provide dates either. This fork lets them through to enrichment, where TMDB can fill in theatrical or digital dates. Items that are still dateless after enrichment are filtered out by the existing post-enrichment date window check.
+
+**Root Folder Filtering** -- Coming Soon monitored settings now include optional root folder dropdowns, populated from Radarr/Sonarr. Movies filter by path prefix, TV shows by `rootFolderPath` equality. Useful when multiple libraries point to different root folders on the same \*arr instance.
+
 ## Upstream PRs
 
 ### Open
 
 | PR                                                    | Description                                                 | Depends On |
 | ----------------------------------------------------- | ----------------------------------------------------------- | ---------- |
+| [#607](https://github.com/agregarr/agregarr/pull/607) | Sort TMDB franchise parts by release date                   | -          |
+| [#606](https://github.com/agregarr/agregarr/pull/606) | Self-heal stale collectionRatingKey during label fallback   | -          |
+| [#605](https://github.com/agregarr/agregarr/pull/605) | Invalidate stale AWS WAF tokens and add solve backoff       | -          |
+| [#604](https://github.com/agregarr/agregarr/pull/604) | Quick sync exclusion bypass fix                             | -          |
+| [#599](https://github.com/agregarr/agregarr/pull/599) | Apply mutual exclusion to filtered hub collections          | -          |
 | [#596](https://github.com/agregarr/agregarr/pull/596) | Detect real content in TV placeholder cleanup via Plex      | -          |
 | [#595](https://github.com/agregarr/agregarr/pull/595) | Fix jobs page crash on unparseable cron expressions         | -          |
 | [#594](https://github.com/agregarr/agregarr/pull/594) | Sanitise poster filenames to match validation allowlist     | -          |

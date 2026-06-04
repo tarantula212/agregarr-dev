@@ -1,6 +1,7 @@
 import PlexAPI from '@server/api/plexapi';
 import { getRepository } from '@server/datasource';
 import { User } from '@server/entity/User';
+import collectionSyncProgress from '@server/lib/collections/CollectionSyncProgress';
 import type { PlexCollection } from '@server/lib/collections/core/types';
 import { libraryCacheService } from '@server/lib/collections/services/LibraryCacheService';
 import { PreExistingCollectionConfigService } from '@server/lib/collections/services/PreExistingCollectionConfigService';
@@ -1727,6 +1728,42 @@ collectionsRoutes.get('/sync/status', async (_req, res) => {
     globalSyncError: globalSyncStatus.globalSyncError,
     collectionsNeedingSync: globalSyncStatus.collectionsNeedingSync,
     nextSyncAt,
+  });
+});
+
+/**
+ * GET /api/v1/collections/sync/progress
+ * Get detailed sync progress for dashboard card and last-sync summary
+ */
+collectionsRoutes.get('/sync/progress', (_req, res) => {
+  const current = collectionSyncProgress.getStatus();
+  const pending = !current && collectionsSync.pending;
+  return res.status(200).json({
+    current,
+    lastCompleted: collectionSyncProgress.getLastCompleted(),
+    pending,
+  });
+});
+
+/**
+ * POST /api/v1/collections/sync/cancel
+ * Cancel a running collection sync
+ */
+collectionsRoutes.post('/sync/cancel', isAuthenticated(), (_req, res) => {
+  // Allow cancel during the pending/wait phase too: the wait loops honour
+  // this.cancelled, so Stop should work before real work begins (running=true).
+  if (!collectionsSync.running && !collectionsSync.pending) {
+    return res.status(409).json({
+      status: 'error',
+      message: 'No collection sync is currently running',
+    });
+  }
+
+  collectionsSync.cancel();
+
+  return res.status(200).json({
+    status: 'success',
+    message: 'Collection sync cancellation requested',
   });
 });
 

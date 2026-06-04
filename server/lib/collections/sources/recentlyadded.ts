@@ -18,6 +18,8 @@ import {
   extractTmdbIdFromGuids,
   extractTvdbIdFromGuids,
   getCollectionMediaType,
+  parseConfigIdFromLabel,
+  updateConfigWithRatingKey,
   type LibraryItemsCache,
 } from '@server/lib/collections/core/CollectionUtilities';
 import type {
@@ -222,24 +224,57 @@ export class FilteredHubCollectionSync extends BaseCollectionSync<'filtered_hub'
           });
           continue;
         }
-        if (!excludedConfig.collectionRatingKey) {
-          logger.warn(
-            `Exclusion config ${excludedId} (${excludedConfig.name}) has no collectionRatingKey`,
-            {
-              label: 'Filtered Hub Collections',
-              excludedConfigType: excludedConfig.type,
-              excludedConfigLibrary: excludedConfig.libraryId,
-            }
+        let plexCol: (typeof libraryCollections)[number] | undefined;
+
+        if (excludedConfig.collectionRatingKey) {
+          plexCol = libraryCollections.find(
+            (c) => c.ratingKey === excludedConfig.collectionRatingKey
           );
-          continue;
         }
-        const plexCol = libraryCollections.find(
-          (c) => c.ratingKey === excludedConfig.collectionRatingKey
-        );
+
+        // Fallback: ratingKey missing or stale (collection was recreated).
+        // Search by Agregarr label which encodes the config ID.
+        // Only attempt if excluded config is in the same library as this hub.
+        if (!plexCol && excludedConfig.libraryId === config.libraryId) {
+          plexCol = libraryCollections.find((c) =>
+            c.labels?.some((label) => {
+              const labelText = typeof label === 'string' ? label : label.tag;
+              return parseConfigIdFromLabel(labelText) === excludedId;
+            })
+          );
+          if (plexCol) {
+            logger.info(
+              `Exclusion config ${excludedId} (${excludedConfig.name}): ${
+                excludedConfig.collectionRatingKey
+                  ? `stale ratingKey ${excludedConfig.collectionRatingKey}`
+                  : 'no ratingKey'
+              } — resolved via label to ratingKey ${plexCol.ratingKey}`,
+              { label: 'Filtered Hub Collections' }
+            );
+            updateConfigWithRatingKey(
+              excludedId,
+              plexCol.ratingKey,
+              excludedConfig.libraryId
+            );
+          }
+        }
+
         if (plexCol?.title) {
-          excludeCollectionTitles.push(plexCol.title);
+          const resolvedTitle = plexCol.title.trim();
+          if (plexCol.title !== resolvedTitle) {
+            logger.warn(
+              `Plex collection "${plexCol.title}" (ratingKey ${plexCol.ratingKey}) has leading/trailing whitespace — fixing title to prevent exclusion mismatch`,
+              { label: 'Filtered Hub Collections' }
+            );
+            await plexClient.updateCollectionTitle(
+              plexCol.ratingKey,
+              resolvedTitle,
+              excludedConfig.libraryId
+            );
+          }
+          excludeCollectionTitles.push(resolvedTitle);
           logger.info(
-            `Resolved exclusion: ${excludedConfig.name} -> Plex "${plexCol.title}" (ratingKey ${plexCol.ratingKey})`,
+            `Resolved exclusion: ${excludedConfig.name} -> Plex "${resolvedTitle}" (ratingKey ${plexCol.ratingKey})`,
             { label: 'Filtered Hub Collections' }
           );
         } else {

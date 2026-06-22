@@ -16,6 +16,11 @@ import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import path from 'path';
 import { ensurePlaceholderEpisodeTitle } from './PlaceholderTitleFixer';
+import {
+  clearUnmatchedPlaceholder,
+  filterRecentlyUnmatched,
+  recordUnmatchedPlaceholder,
+} from './unmatchedPlaceholderCache';
 
 /**
  * Process missing items as placeholders for a collection
@@ -257,15 +262,31 @@ export async function processPlaceholdersForMissingItems(
     return [];
   }
 
+  // Skip items Plex recently failed to match - retrying every sync re-downloads
+  // the same trailers and burns hours on placeholders that get deleted again
+  const itemsToCreate = await filterRecentlyUnmatched(
+    config.libraryId,
+    itemsNotDownloaded
+  );
+
+  if (itemsToCreate.length === 0) {
+    logger.info('All remaining items are in the unmatched placeholder cache', {
+      label: 'PlaceholderService',
+      configName: config.name,
+      skippedUnmatched: itemsNotDownloaded.length,
+    });
+    return [];
+  }
+
   // Filter sourceData to match remaining items
-  const remainingTmdbIds = new Set(itemsNotDownloaded.map((i) => i.tmdbId));
+  const remainingTmdbIds = new Set(itemsToCreate.map((i) => i.tmdbId));
   const remainingSourceData = filteredSourceData.filter((s) =>
     remainingTmdbIds.has(s.tmdbId)
   );
 
   // Build a map of TVDB ID -> Sonarr folder name for TV shows
   const sonarrFolderNames = new Map<number, string>();
-  for (const item of itemsNotDownloaded) {
+  for (const item of itemsToCreate) {
     if (item.mediaType === 'tv' && item.tvdbId) {
       const sonarrStatus = showsByTvdbId.get(item.tvdbId);
       if (sonarrStatus?.folderName) {
@@ -276,7 +297,7 @@ export async function processPlaceholdersForMissingItems(
 
   // Call the internal placeholder creation logic
   return createPlaceholders(
-    itemsNotDownloaded,
+    itemsToCreate,
     remainingSourceData,
     config,
     plexClient,
@@ -446,11 +467,21 @@ async function removeUnmatchedPlaceholders(
   }
 
   let removedCount = 0;
+  const removedFolders: string[] = [];
 
   for (const { sourceItem, placeholderPath } of placeholders) {
     try {
       await removePlaceholder(placeholderPath, sourceItem.mediaType);
       removedCount += 1;
+      // TV placeholder files live in <show>/Season 00/ — scope the
+      // ghost-entry scan to the show folder
+      removedFolders.push(
+        sourceItem.mediaType === 'tv'
+          ? path.dirname(path.dirname(placeholderPath))
+          : path.dirname(placeholderPath)
+      );
+
+      await recordUnmatchedPlaceholder(config.libraryId, sourceItem);
 
       logger.warn('Removed placeholder that Plex could not match', {
         label: 'PlaceholderService',
@@ -478,7 +509,10 @@ async function removeUnmatchedPlaceholders(
     });
 
     try {
-      await plexClient.scanLibrary(config.libraryId);
+      const { removeGhostEntries } = await import(
+        '@server/lib/placeholders/services/PlaceholderCleanup'
+      );
+      await removeGhostEntries(plexClient, config.libraryId, removedFolders);
     } catch (error) {
       logger.warn(
         'Failed to trigger cleanup scan after removing unmatched placeholders',
@@ -545,6 +579,37 @@ async function handleUnmatchedPlaceholders(
         continue;
       }
 
+      // Accept a late match only when the external ids line up with the item
+      // we created. Title overlap alone matched wrong shows before
+      // (e.g. "World War II: From the Frontlines" -> "FROM"). TVDB counts too:
+      // Plex may match a show by TVDB without exposing a TMDB guid.
+      const exactMatch = titleMatches.find(
+        (m) =>
+          m.tmdbId === item.tmdbId ||
+          (item.tvdbId !== undefined &&
+            m.tvdbId !== undefined &&
+            m.tvdbId === item.tvdbId)
+      );
+
+      if (exactMatch) {
+        logger.info(
+          'Found item by title with matching external id - adding to discovered (late match)',
+          {
+            label: 'PlaceholderService',
+            title: item.title,
+            tmdbId: item.tmdbId,
+            plexTitle: exactMatch.title,
+            ratingKey: exactMatch.ratingKey,
+          }
+        );
+
+        discovered.set(item.tmdbId, {
+          ratingKey: exactMatch.ratingKey,
+          title: exactMatch.title,
+        });
+        continue;
+      }
+
       // Check if any matches are unmatched in Plex (no TMDB guid)
       const unmatchedInPlex = titleMatches.filter(
         (match) => !match.hasTmdbGuid
@@ -583,25 +648,18 @@ async function handleUnmatchedPlaceholders(
           title: item.title,
           tmdbId: item.tmdbId,
         });
-      } else if (titleMatches.length > 0) {
-        // Found matched items - this is the "late match" case
-        const match = titleMatches[0];
-        logger.info(
-          'Found item by title with TMDB guid - adding to discovered (late match)',
+      } else {
+        // Matches exist with TMDB guids, but none belong to our item - it's a
+        // different show that overlaps on title. Leave for poll cleanup.
+        logger.debug(
+          'Title matches found but none with the requested external ids - leaving for poll cleanup',
           {
             label: 'PlaceholderService',
             title: item.title,
             tmdbId: item.tmdbId,
-            plexTitle: match.title,
-            ratingKey: match.ratingKey,
+            matchTmdbIds: titleMatches.map((m) => m.tmdbId),
           }
         );
-
-        // Add to discovered map
-        discovered.set(item.tmdbId, {
-          ratingKey: match.ratingKey,
-          title: match.title,
-        });
       }
     } catch (error) {
       logger.error('Error during title-based search for unmatched item', {
@@ -624,11 +682,26 @@ async function handleUnmatchedPlaceholders(
     );
 
     let deletedCount = 0;
+    const deletedFolders: string[] = [];
     for (const file of filesToDelete) {
       try {
         await removePlaceholder(file.path, file.mediaType);
         excludedUnmatched.add(file.tmdbId);
         deletedCount++;
+        // TV placeholder files live in <show>/Season 00/ — scope the
+        // ghost-entry scan to the show folder
+        deletedFolders.push(
+          file.mediaType === 'tv'
+            ? path.dirname(path.dirname(file.path))
+            : path.dirname(file.path)
+        );
+
+        await recordUnmatchedPlaceholder(config.libraryId, {
+          tmdbId: file.tmdbId,
+          mediaType: file.mediaType,
+          title: file.title,
+        });
+
         logger.debug('Deleted unmatched placeholder file', {
           label: 'PlaceholderService',
           title: file.title,
@@ -659,7 +732,10 @@ async function handleUnmatchedPlaceholders(
       );
 
       try {
-        await plexClient.scanLibrary(config.libraryId);
+        const { removeGhostEntries } = await import(
+          '@server/lib/placeholders/services/PlaceholderCleanup'
+        );
+        await removeGhostEntries(plexClient, config.libraryId, deletedFolders);
       } catch (error) {
         logger.error('Failed to trigger cleanup scan after deletions', {
           label: 'PlaceholderService',
@@ -1281,12 +1357,29 @@ async function createPlaceholders(
             }
           }
         } catch (error) {
-          logger.error('Failed to delete orphaned placeholder', {
-            label: 'PlaceholderService',
-            title: item.title,
-            tmdbId,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          const isFileAlreadyGone =
+            error instanceof Error &&
+            'code' in error &&
+            (error as NodeJS.ErrnoException).code === 'ENOENT';
+
+          if (isFileAlreadyGone) {
+            deletedOrphanCount++;
+            logger.debug(
+              'Orphaned placeholder file already removed - skipping',
+              {
+                label: 'PlaceholderService',
+                title: item.title,
+                tmdbId,
+              }
+            );
+          } else {
+            logger.error('Failed to delete orphaned placeholder', {
+              label: 'PlaceholderService',
+              title: item.title,
+              tmdbId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
 
         continue; // Skip to next item - orphan has been deleted
@@ -1737,6 +1830,13 @@ async function createPlaceholders(
   for (const { sourceItem, placeholderPath } of allPlaceholders) {
     const plexItem = discoveredItemsMap.get(sourceItem.tmdbId);
     if (!plexItem) continue;
+
+    // Item matched - drop any negative-cache entry from earlier failures
+    await clearUnmatchedPlaceholder(
+      config.libraryId,
+      sourceItem.mediaType,
+      sourceItem.tmdbId
+    );
 
     try {
       // Set metadata markers for Recently Added filtering

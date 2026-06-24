@@ -1,5 +1,27 @@
 import type { ApplicationCondition } from '@server/entity/OverlayTemplate';
 
+export interface PlexMetadata {
+  ratingKey: string;
+  parentRatingKey?: string;
+  guid: string;
+  type: 'movie' | 'show' | 'season' | 'episode';
+  title: string;
+  year?: number;
+  thumb?: string;
+  Guid: {
+    id: string;
+  }[];
+  Label?: { tag: string; id?: number }[]; // Item-level labels/tags in Plex
+  index: number;
+  parentIndex?: number;
+  leafCount: number;
+  viewedLeafCount: number;
+  addedAt: number;
+  updatedAt: number;
+  lastViewedAt?: number;
+  viewCount?: number;
+}
+
 export interface PlexSearchResult {
   ratingKey: string;
   title: string;
@@ -8,6 +30,7 @@ export interface PlexSearchResult {
   thumb?: string;
   libraryId: string;
   libraryName: string;
+  children?: any[];
 }
 
 export interface TemplateRuleResult {
@@ -46,6 +69,10 @@ export interface OverlayTestResult {
     type: 'movie' | 'show';
     libraryId: string;
     libraryName: string;
+    parent?: {
+      title: string;
+      year?: number;
+    }
   };
   templates: TemplateResult[];
   context: Record<string, unknown>; // Flat list of all context variables

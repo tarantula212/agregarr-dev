@@ -292,7 +292,7 @@ class PlexTvAPI extends ExternalAPI {
   }> {
     try {
       const watchlistCache = cacheManager.getCache('plexwatchlist');
-      let cachedWatchlist = watchlistCache.data.get<PlexWatchlistCache>(
+      let cachedWatchlist = await watchlistCache.data.get<PlexWatchlistCache>(
         this.authToken
       );
 
@@ -318,7 +318,7 @@ class PlexTvAPI extends ExternalAPI {
           response: response.data,
         };
 
-        watchlistCache.data.set<PlexWatchlistCache>(
+        await watchlistCache.data.set<PlexWatchlistCache>(
           this.authToken,
           cachedWatchlist
         );

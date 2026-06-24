@@ -2699,7 +2699,7 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
 
     // Try to use cached data if requested
     if (useCache) {
-      const cachedData = cache.data.get<CollectionSourceData[]>(cacheKey);
+      const cachedData = await cache.data.get<CollectionSourceData[]>(cacheKey);
       if (cachedData) {
         logger.debug(
           `Using cached list data for ${config.name} (${this.source})`,
@@ -2710,7 +2710,7 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
             cacheKey,
           }
         );
-        return cachedData;
+        return cachedData ?? [];
       }
 
       logger.debug(
@@ -2729,7 +2729,7 @@ export abstract class BaseCollectionSync<TSource extends CollectionSource>
 
     // Cache the fresh data for future preview use
     if (freshData && freshData.length > 0) {
-      cache.data.set(cacheKey, freshData);
+      await cache.data.set(cacheKey, freshData);
       logger.debug(`Cached list data for ${config.name} (${this.source})`, {
         label: `${this.source} Collections Cache`,
         configId: config.id,

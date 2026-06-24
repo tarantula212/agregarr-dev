@@ -1289,11 +1289,11 @@ settingsRoutes.get('/cache', async (_req, res) => {
 
 settingsRoutes.post<{ cacheId: AvailableCacheIds }>(
   '/cache/:cacheId/flush',
-  (req, res, next) => {
+  async (req, res, next) => {
     const cache = cacheManager.getCache(req.params.cacheId);
 
     if (cache) {
-      cache.flush();
+      await cache.flush();
       return res.status(204).send();
     }
 
@@ -1564,7 +1564,12 @@ settingsRoutes.post('/export-debug', (req, res, next) => {
 
 // Check if youtube-cookies.txt file exists
 settingsRoutes.get('/youtube-cookies-status', (_req, res) => {
-  const cookiesPath = path.join(process.cwd(), 'config', 'youtube-cookies.txt');
+  const cookiesPath = path.join(
+    process.cwd(),
+    'config',
+    'youtube',
+    'cookies.txt'
+  );
   const exists = fs.existsSync(cookiesPath);
 
   res.status(200).json({ exists });

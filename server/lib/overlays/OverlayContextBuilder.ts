@@ -214,7 +214,7 @@ const rtInflightRequests = new Map<string, Promise<RTRating | null>>();
  */
 export async function buildRenderContext(
   item: PlexLibraryItem,
-  mediaType: 'movie' | 'show',
+  mediaType: 'movie' | 'show' | 'season',
   isPlaceholder = false,
   maintainerrCollections?: MaintainerrCollection[],
   preloadedImdbRatings?: Map<string, number | null>,
@@ -241,9 +241,10 @@ export async function buildRenderContext(
   let tmdbId: number | undefined;
   let imdbIdFromGuid: string | undefined;
 
-  if (item.Guid && Array.isArray(item.Guid)) {
+  const guid = mediaType === 'season' ? item.parent?.Guid : item.Guid;
+  if (guid && Array.isArray(guid)) {
     // Extract TMDB ID
-    const tmdbGuid = item.Guid.find((g) => g.id?.includes('tmdb://'));
+    const tmdbGuid = guid.find((g) => g.id?.includes('tmdb://'));
     if (tmdbGuid) {
       const match = tmdbGuid.id.match(/tmdb:\/\/(\d+)/);
       if (match) {
@@ -252,7 +253,7 @@ export async function buildRenderContext(
     }
 
     // Extract IMDb ID directly from Plex GUID (same as prefetch does)
-    const imdbGuid = item.Guid.find((g) => g.id?.startsWith('imdb://'));
+    const imdbGuid = guid.find((g) => g.id?.startsWith('imdb://'));
     if (imdbGuid) {
       imdbIdFromGuid = imdbGuid.id.replace('imdb://', '');
     }
@@ -348,7 +349,7 @@ export async function buildRenderContext(
           try {
             const imdbClient = getImdbClient();
             const imdbMediaType: 'movie' | 'tv' =
-              mediaType === 'show' ? 'tv' : 'movie';
+              mediaType === 'movie' ? 'movie' : 'tv';
             const top250Result = await imdbClient.checkTop250(
               imdbId,
               imdbMediaType
@@ -388,7 +389,7 @@ export async function buildRenderContext(
         const rtCache = cacheManager.getCache('rt-ratings');
 
         // Check cache first
-        const cachedRt = rtCache.data.get<string | RTRating>(rtCacheKey);
+        const cachedRt = await rtCache.data.get<string | RTRating>(rtCacheKey);
         if (cachedRt !== undefined) {
           if (cachedRt === RT_NULL_SENTINEL) {
             // Cached "no rating" - skip API call
@@ -466,7 +467,7 @@ export async function buildRenderContext(
                 context.rtCertifiedFresh =
                   rtRating.criticsRating === 'Certified Fresh';
                 // Cache the rating with adaptive TTL
-                rtCache.data.set(rtCacheKey, rtRating, ttl);
+                await rtCache.data.set(rtCacheKey, rtRating, ttl);
                 logger.debug('Fetched and cached RT ratings', {
                   label: 'OverlayContextBuilder',
                   title: context.title,
@@ -478,7 +479,7 @@ export async function buildRenderContext(
                 });
               } else {
                 // Cache the null result with adaptive TTL
-                rtCache.data.set(rtCacheKey, RT_NULL_SENTINEL, nullTtl);
+                await rtCache.data.set(rtCacheKey, RT_NULL_SENTINEL, nullTtl);
                 logger.debug('RT rating not found, cached null', {
                   label: 'OverlayContextBuilder',
                   title: context.title,

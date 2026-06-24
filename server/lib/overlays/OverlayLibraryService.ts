@@ -413,7 +413,7 @@ class OverlayLibraryService {
       let nullCacheHits = 0;
 
       for (const [imdbId, data] of imdbData) {
-        const cachedRating = adaptiveCache.get<number | null>(imdbId);
+        const cachedRating = await adaptiveCache.get<number | null>(imdbId);
         if (cachedRating !== undefined) {
           // Store in preloadedImdbRatings (including null) to prevent fallback API calls
           this.preloadedImdbRatings.set(imdbId, cachedRating);
@@ -459,12 +459,12 @@ class OverlayLibraryService {
 
             if (rating.rating !== null) {
               this.preloadedImdbRatings.set(rating.imdbId, rating.rating);
-              adaptiveCache.set(rating.imdbId, rating.rating, ttl);
+              await adaptiveCache.set(rating.imdbId, rating.rating, ttl);
             } else {
               // Cache null rating with adaptive TTL based on content age
               const nullTtl = getNullRatingTtl(releaseYear);
               this.preloadedImdbRatings.set(rating.imdbId, null);
-              adaptiveCache.set(rating.imdbId, null, nullTtl);
+              await adaptiveCache.set(rating.imdbId, null, nullTtl);
             }
           }
 
@@ -473,7 +473,7 @@ class OverlayLibraryService {
             if (!receivedIds.has(item.imdbId)) {
               const nullTtl = getNullRatingTtl(item.releaseYear);
               this.preloadedImdbRatings.set(item.imdbId, null);
-              adaptiveCache.set(item.imdbId, null, nullTtl);
+              await adaptiveCache.set(item.imdbId, null, nullTtl);
             }
           }
 
@@ -612,7 +612,9 @@ class OverlayLibraryService {
 
       for (const item of tmdbItems) {
         const cacheKey = `${item.tmdbId}:${item.mediaType}`;
-        const cached = adaptiveCache.get<ReleaseDateInfo | null>(cacheKey);
+        const cached = await adaptiveCache.get<ReleaseDateInfo | null>(
+          cacheKey
+        );
 
         if (cached !== undefined) {
           this.preloadedTmdbReleaseDates.set(cacheKey, cached);
@@ -729,13 +731,13 @@ class OverlayLibraryService {
               );
               if (releaseDateInfo) {
                 preloadedMap?.set(cacheKey, releaseDateInfo);
-                adaptiveCache.set(cacheKey, releaseDateInfo, ttl);
+                await adaptiveCache.set(cacheKey, releaseDateInfo, ttl);
                 fetchSuccess++;
               } else {
                 // For movies without release dates, cache null
                 const nullTtl = getNullRatingTtl(year);
                 preloadedMap?.set(cacheKey, null);
-                adaptiveCache.set(cacheKey, null, nullTtl);
+                await adaptiveCache.set(cacheKey, null, nullTtl);
               }
             } catch (error) {
               fetchFailures++;
@@ -743,7 +745,7 @@ class OverlayLibraryService {
               if (mediaType === 'movie') {
                 const nullTtl = getNullRatingTtl(year);
                 preloadedMap?.set(cacheKey, null);
-                adaptiveCache.set(cacheKey, null, nullTtl);
+                await adaptiveCache.set(cacheKey, null, nullTtl);
               }
               logger.debug('TMDB prefetch failed for item', {
                 label: 'OverlayLibrary',
@@ -1228,26 +1230,20 @@ class OverlayLibraryService {
           await this.buildCollectionMembershipMap(plexApi);
       }
 
-      // Fetch all items (handle pagination)
+      // Fetch all items (handle pagination) using type filters to avoid N+1 calls
       let allItems: PlexLibraryItem[] = [];
-      let offset = 0;
-      const pageSize = 50;
-      let hasMore = true;
 
-      // Paginate through all library items
-      while (hasMore) {
-        const response = await plexApi.getLibraryContents(libraryId, {
-          offset,
-          size: pageSize,
-        });
+      if (config.mediaType === 'movie') {
+        // fetch all movies
+        allItems = await plexApi.getAllLibraryContents(libraryId, 'movie');
+      } else if (config.mediaType === 'show') {
+        // fetch all shows and seasons
+        const [showItems, seasonItems] = await Promise.all([
+          plexApi.getAllLibraryContents(libraryId, 'show'),
+          plexApi.getAllLibraryContents(libraryId, 'season'),
+        ]);
 
-        allItems = allItems.concat(response.items);
-
-        if (offset + pageSize >= response.totalSize) {
-          hasMore = false;
-        }
-
-        offset += pageSize;
+        allItems = showItems.concat(seasonItems);
       }
 
       // Set total items count
@@ -1307,15 +1303,21 @@ class OverlayLibraryService {
 
       // Batch-fetch full metadata for all applicable items in a single Plex call.
       // This replaces N sequential getMetadata() calls (~200ms each) with 1 bulk request.
+      // CRITICAL: Skip episodes - overlays currently apply to movies, shows, and seasons
       const overlayRatingKeys = allItems
-        .filter((i) => i.type !== 'episode' && i.type !== 'season')
+        .filter((i) => i.type !== 'episode')
         .map((i) => i.ratingKey);
       const batchMetadata = await plexApi.getMetadataBatch(overlayRatingKeys);
 
       // Process each item
-      for (const item of allItems) {
-        // CRITICAL: Skip episodes and seasons - overlays only apply to movies and shows
-        if (item.type === 'episode' || item.type === 'season') {
+      const sortedItems = allItems.sort((a, b) => {
+        const titleA = a.parentTitle ?? a.title;
+        const titleB = b.parentTitle ?? b.title;
+        return titleA.localeCompare(titleB);
+      });
+      for (const item of sortedItems) {
+        // CRITICAL: Skip episodes - overlays apply to movies, shows, and seasons
+        if (item.type === 'episode') {
           this.updateProgress(libraryId, (p) => {
             p.currentItem++; // Advance currentItem to maintain accurate progress %
             p.filteredCount++;
@@ -1351,7 +1353,9 @@ class OverlayLibraryService {
 
         // Update current item title (before processing)
         this.updateProgress(libraryId, (p) => {
-          p.currentTitle = item.title || '';
+          p.currentTitle = item.parentTitle
+            ? `${item.parentTitle} - ${item.title}`
+            : item.title || '';
         });
 
         try {
@@ -1360,9 +1364,16 @@ class OverlayLibraryService {
             batchMetadata.get(item.ratingKey) ??
             (await plexApi.getMetadata(item.ratingKey));
 
+          const { parentRatingKey } = item;
+          const parentMetadata = parentRatingKey
+            ? batchMetadata.get(parentRatingKey) ??
+              (await plexApi.getMetadata(parentRatingKey))
+            : undefined;
+
           // Merge full metadata with library item
           const itemWithFullMetadata = {
             ...item,
+            parent: parentMetadata,
             Media: fullMetadata.Media,
             Label: fullMetadata.Label,
           };
@@ -1700,8 +1711,12 @@ class OverlayLibraryService {
     try {
       // CRITICAL: Derive actual media type from item.type, not library config
       // This prevents TMDB API namespace mismatches that cause wrong posters
-      const actualMediaType: 'movie' | 'show' =
-        item.type === 'movie' ? 'movie' : 'show';
+      const actualMediaType: 'movie' | 'show' | 'season' =
+        item.type === 'movie'
+          ? 'movie'
+          : item.type === 'season'
+          ? 'season'
+          : 'show';
 
       // Warn if there's a mismatch between item type and library config
       if (actualMediaType !== configuredLibraryType) {
@@ -1723,8 +1738,10 @@ class OverlayLibraryService {
 
       // Extract TMDB ID from item GUIDs
       let tmdbId: number | undefined;
-      if (item.Guid && Array.isArray(item.Guid)) {
-        const tmdbGuid = item.Guid.find((g) => g.id?.includes('tmdb://'));
+      const guids =
+        actualMediaType === 'season' ? item.parent?.Guid : item.Guid;
+      if (guids && Array.isArray(guids)) {
+        const tmdbGuid = guids.find((g) => g.id?.includes('tmdb://'));
         if (tmdbGuid) {
           const match = tmdbGuid.id.match(/tmdb:\/\/(\d+)/);
           if (match) {
@@ -1803,7 +1820,7 @@ class OverlayLibraryService {
       if (tmdbId) {
         const releaseDateInfo = await fetchReleaseDateInfo(
           tmdbId,
-          actualMediaType,
+          actualMediaType === 'movie' ? 'movie' : 'show',
           this.sonarrSeriesCache,
           this.preloadedTmdbReleaseDates
         );
@@ -1878,7 +1895,7 @@ class OverlayLibraryService {
       if (tmdbId) {
         monitoringContext = await checkMonitoringStatus(
           tmdbId,
-          actualMediaType,
+          actualMediaType === 'movie' ? 'movie' : 'show',
           this.radarrMoviesCache,
           this.sonarrSeriesCache
         );
@@ -1970,7 +1987,7 @@ class OverlayLibraryService {
         },
       });
 
-      // OPTIMIZATION: Check if overlay inputs changed BEFORE downloading poster
+      // OPTIMIZATION: Check if overlay inputs or base poster changed BEFORE downloading poster
       // This prevents expensive poster downloads when nothing has changed
       try {
         const currentPosterUrl = await plexApi.getCurrentPosterUrl(
@@ -1980,46 +1997,35 @@ class OverlayLibraryService {
         const overlayInputsChanged =
           metadata?.lastOverlayInputHash !== overlayInputHash;
 
-        // Check if Plex poster changed using normalized comparison
-        // This handles different URL formats (upload://, /library/metadata/, http://...)
-        const { posterUrlsMatch, extractThumbId } = await import(
-          '@server/utils/posterUrlHelpers'
-        );
-        const plexPosterMissing = !posterUrlsMatch(
-          metadata?.ourOverlayPosterUrl,
-          currentPosterUrl
-        );
-
-        // Debug logging for poster URL comparison
-        logger.debug('Poster URL comparison', {
-          label: 'OverlayLibrary',
-          itemTitle: item.title,
-          storedUrl: metadata?.ourOverlayPosterUrl,
-          currentUrl: currentPosterUrl,
-          storedThumbId: extractThumbId(metadata?.ourOverlayPosterUrl),
-          currentThumbId: extractThumbId(currentPosterUrl),
-          urlsMatch: !plexPosterMissing,
-          plexPosterMissing,
-        });
-
-        // Also check if base poster source changed (TMDB vs Plex)
         const settings = getSettings();
         const posterSource = settings.overlays?.defaultPosterSource || 'tmdb';
-        const basePosterSourceChanged =
-          metadata?.basePosterSource !== posterSource;
 
-        if (
-          !overlayInputsChanged &&
-          !plexPosterMissing &&
-          !basePosterSourceChanged
-        ) {
+        const { plexBasePosterManager } = await import(
+          '@server/lib/overlays/PlexBasePosterManager'
+        );
+        const basePosterChanged =
+          await plexBasePosterManager.hasBasePosterChanged(
+            item,
+            posterSource,
+            libraryId,
+            libraryName,
+            currentPosterUrl,
+            {
+              basePosterSource: metadata?.basePosterSource,
+              originalPlexPosterUrl: metadata?.originalPlexPosterUrl,
+              ourOverlayPosterUrl: metadata?.ourOverlayPosterUrl,
+              localPosterModifiedTime: metadata?.localPosterModifiedTime,
+            },
+            tmdbId
+          );
+
+        if (!overlayInputsChanged && !basePosterChanged) {
           logger.debug('Nothing changed, skipping overlay application', {
             label: 'OverlayLibrary',
             itemTitle: item.title,
             ratingKey: item.ratingKey,
             overlayInputsChanged: false,
-            plexPosterMissing: false,
-            basePosterSourceChanged: false,
+            basePosterChanged: false,
           });
           return { skipped: true }; // Skip this item - no need to download poster
         }
@@ -2028,8 +2034,7 @@ class OverlayLibraryService {
           label: 'OverlayLibrary',
           itemTitle: item.title,
           overlayInputsChanged,
-          plexPosterMissing,
-          basePosterSourceChanged,
+          basePosterChanged,
         });
       } catch (metaError) {
         logger.warn('Metadata check failed, proceeding with overlay', {

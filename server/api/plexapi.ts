@@ -17,9 +17,11 @@ interface ExtendedPlexAPI extends NodePlexAPI {
 
 export interface PlexLibraryItem {
   ratingKey: string;
+  parent?: PlexMetadata;
   parentRatingKey?: string;
   grandparentRatingKey?: string;
   title: string;
+  parentTitle?: string;
   guid: string;
   parentGuid?: string;
   grandparentGuid?: string;
@@ -28,6 +30,7 @@ export interface PlexLibraryItem {
   lastViewedAt?: number;
   viewCount?: number;
   year?: number;
+  parentYear?: number;
   originallyAvailableAt?: string; // Original release date (YYYY-MM-DD format)
   index?: number;
   parentIndex?: number;
@@ -63,10 +66,12 @@ interface PlexLibrariesResponse {
 
 export interface PlexMetadata {
   ratingKey: string;
+  parent?: PlexMetadata;
   parentRatingKey?: string;
   guid: string;
   type: 'movie' | 'show' | 'season' | 'episode';
   title: string;
+  year?: number;
   thumb?: string;
   editionTitle?: string;
   Guid: {
@@ -384,11 +389,50 @@ class PlexAPI {
     }
   }
 
+  public async getAllLibraryContents(
+    libraryId: string,
+    type: 'movie' | 'show' | 'season'
+  ): Promise<PlexLibraryItem[]> {
+    const results: PlexLibraryItem[] = [];
+    let offset = 0;
+    const pageSize = 50;
+    let hasMore = true;
+    while (hasMore) {
+      const response = await this.getLibraryContents(libraryId, {
+        offset,
+        size: pageSize,
+        type,
+      });
+
+      results.push(...response.items);
+
+      if (offset + pageSize >= response.totalSize) {
+        hasMore = false;
+      }
+
+      offset += pageSize;
+    }
+
+    return results;
+  }
+
   public async getLibraryContents(
     id: string,
-    { offset = 0, size = 50 }: { offset?: number; size?: number } = {}
+    {
+      offset = 0,
+      size = 50,
+      type,
+    }: {
+      offset?: number;
+      size?: number;
+      type?: 'movie' | 'show' | 'season';
+    } = {}
   ): Promise<{ totalSize: number; items: PlexLibraryItem[] }> {
-    const uri = `/library/sections/${id}/all?includeGuids=1`;
+    const typeId = type === 'movie' ? 1 : type === 'show' ? 2 : 3;
+    const uri = `/library/sections/${id}/all?includeGuids=1&includeChildren=1${
+      type ? `&type=${typeId}` : ''
+    }`;
+
     const headers = {
       'X-Plex-Container-Start': `${offset}`,
       'X-Plex-Container-Size': `${size}`,

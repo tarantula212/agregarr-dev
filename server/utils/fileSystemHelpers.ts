@@ -28,9 +28,22 @@ export function sanitizeForFilename(input: string): string {
  * @param dirPath - Directory path to search
  * @returns Full path to image file, or null if not found
  */
-export async function findImageFile(dirPath: string): Promise<string | null> {
+export async function findImageFile(
+  dirPath: string,
+  name?: string
+): Promise<string | null> {
   try {
     const files = await fs.readdir(dirPath);
+
+    if (name) {
+      const imageFile = files.find((f) =>
+        new RegExp(`^${name}\\.(jpg|jpeg|png|webp)$`, 'i').test(f)
+      );
+      if (imageFile) {
+        return path.join(dirPath, imageFile);
+      }
+      return null;
+    }
 
     // Priority 1: poster.jpg or poster.png (exact name match, case insensitive)
     const posterFile = files.find((f) =>

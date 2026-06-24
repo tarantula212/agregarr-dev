@@ -331,7 +331,7 @@ class FlixPatrolAPI extends ExternalAPI {
     const cacheKey = 'flixpatrol:countries:v5'; // v5 to bust cache with direct axios
 
     // Check cache first
-    const cached = this.cache?.get<string[]>(cacheKey);
+    const cached = await this.cache?.get<string[]>(cacheKey);
     if (cached) {
       logger.debug('Returning cached countries list', {
         label: 'FlixPatrol API',
@@ -351,7 +351,7 @@ class FlixPatrolAPI extends ExternalAPI {
       const countries = this.parseCountriesFromHtml(html);
 
       // Cache for 24 hours
-      this.cache?.set(cacheKey, countries, 86400);
+      await this.cache?.set(cacheKey, countries, 86400);
 
       logger.info(`Scraped ${countries.length} countries from FlixPatrol`, {
         label: 'FlixPatrol API',
@@ -386,7 +386,7 @@ class FlixPatrolAPI extends ExternalAPI {
     const cacheKey = `flixpatrol:platforms:${country}`;
 
     // Check cache first
-    const cached = this.cache?.get<FlixPatrolPlatformOption[]>(cacheKey);
+    const cached = await this.cache?.get<FlixPatrolPlatformOption[]>(cacheKey);
     if (cached) {
       logger.debug(`Returning cached platforms for ${country}`, {
         label: 'FlixPatrol API',
@@ -411,7 +411,7 @@ class FlixPatrolAPI extends ExternalAPI {
       const platforms = this.parsePlatformsFromHtml(html, country);
 
       // Cache for 24 hours
-      this.cache?.set(cacheKey, platforms, 86400);
+      await this.cache?.set(cacheKey, platforms, 86400);
 
       logger.info(`Scraped ${platforms.length} platforms for ${country}`, {
         label: 'FlixPatrol API',
@@ -1363,7 +1363,7 @@ class FlixPatrolAPI extends ExternalAPI {
     const cacheKey = 'flixpatrol:sprite-url:v1';
 
     // Check cache first (cache for 1 hour)
-    const cached = this.cache?.get<string>(cacheKey);
+    const cached = await this.cache?.get<string>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -1419,7 +1419,7 @@ class FlixPatrolAPI extends ExternalAPI {
         }
 
         // Cache for 1 hour
-        this.cache?.set(cacheKey, absoluteUrl, 3600);
+        await this.cache?.set(cacheKey, absoluteUrl, 3600);
 
         logger.debug('Extracted current FlixPatrol sprite URL', {
           label: 'FlixPatrol API',

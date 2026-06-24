@@ -98,6 +98,7 @@ const LibraryPreviewLarge: React.FC<{
           body: JSON.stringify({
             templateIds: enabledIds,
             contextId: `library-${libraryId}`, // Each library gets its own context
+            libraryId: parseInt(libraryId), // Pass library ID for context-aware preview generation
           }),
           signal: abortController.signal,
         }

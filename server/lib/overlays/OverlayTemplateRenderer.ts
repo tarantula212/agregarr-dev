@@ -450,7 +450,7 @@ export interface OverlayRenderContext {
 
   // Item metadata
   isPlaceholder: boolean; // true = Coming Soon item, false = real item in Plex
-  mediaType: 'movie' | 'show';
+  mediaType: 'movie' | 'show' | 'season';
 
   // Future extensibility
   [key: string]: string | number | boolean | Date | string[] | undefined;

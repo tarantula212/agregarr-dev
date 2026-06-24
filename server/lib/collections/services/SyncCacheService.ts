@@ -1,15 +1,11 @@
 import type { OverseerrMediaRequest } from '@server/api/overseerr';
 import type { TmdbMovieDetails } from '@server/api/themoviedb/interfaces';
+import cacheManager, { type NodeCache } from '@server/lib/cache';
 import type { LibraryItemsCache } from '@server/lib/collections/core/CollectionUtilities';
 import type {
   DiscoveredMoviePlaceholder,
   DiscoveredPlaceholder,
 } from '@server/lib/placeholders/services/PlaceholderDiscovery';
-
-interface CacheEntry<T> {
-  data: T;
-  expires: number;
-}
 
 /**
  * Centralized cache service for sharing data across sync operations
@@ -20,8 +16,8 @@ export class SyncCacheService {
 
   private overseerrRequestsCache: OverseerrMediaRequest[] = [];
   private libraryItemsCache: LibraryItemsCache = {};
-  private tmdbFranchiseCache: Map<number, CacheEntry<TmdbMovieDetails>> =
-    new Map();
+  private tmdbFranchiseCache: NodeCache =
+    cacheManager.getCache('tmdb-franchise').data;
   private placeholderDiscoveryCacheTv: DiscoveredPlaceholder[] = [];
   private placeholderDiscoveryCacheMovies: DiscoveredMoviePlaceholder[] = [];
   private isInitialized = false;
@@ -76,7 +72,7 @@ export class SyncCacheService {
   public clear(): void {
     this.overseerrRequestsCache = [];
     this.libraryItemsCache = {};
-    this.tmdbFranchiseCache.clear();
+    // this.tmdbFranchiseCache.flushAll();
     this.placeholderDiscoveryCacheTv = [];
     this.placeholderDiscoveryCacheMovies = [];
     this.isInitialized = false;
@@ -123,16 +119,10 @@ export class SyncCacheService {
    * @param tmdbId TMDB movie ID
    * @returns Cached movie details if valid, null if not cached or expired
    */
-  public getTmdbMovieDetails(tmdbId: number): TmdbMovieDetails | null {
-    const cached = this.tmdbFranchiseCache.get(tmdbId);
-    if (cached && cached.expires > Date.now()) {
-      return cached.data;
-    }
-    // Clean up expired entry
-    if (cached) {
-      this.tmdbFranchiseCache.delete(tmdbId);
-    }
-    return null;
+  public async getTmdbMovieDetails(
+    tmdbId: number
+  ): Promise<TmdbMovieDetails | undefined> {
+    return await this.tmdbFranchiseCache.get<TmdbMovieDetails>(tmdbId);
   }
 
   /**
@@ -141,31 +131,28 @@ export class SyncCacheService {
    * @param data Movie details to cache
    * @param ttlMs Time to live in milliseconds (default: 48 hours)
    */
-  public setTmdbMovieDetails(
+  public async setTmdbMovieDetails(
     tmdbId: number,
     data: TmdbMovieDetails,
     ttlMs: number = 48 * 60 * 60 * 1000 // 48 hours default
-  ): void {
-    this.tmdbFranchiseCache.set(tmdbId, {
-      data,
-      expires: Date.now() + ttlMs,
-    });
+  ): Promise<boolean> {
+    return await this.tmdbFranchiseCache.set(tmdbId, data, ttlMs / 1000);
   }
 
   /**
    * Clear expired TMDB cache entries
    */
-  public cleanExpiredTmdbCache(): number {
-    const now = Date.now();
-    let cleaned = 0;
-    for (const [tmdbId, entry] of this.tmdbFranchiseCache) {
-      if (entry.expires <= now) {
-        this.tmdbFranchiseCache.delete(tmdbId);
-        cleaned++;
-      }
-    }
-    return cleaned;
-  }
+  // public cleanExpiredTmdbCache(): number {
+  //   const now = Date.now();
+  //   let cleaned = 0;
+  //   for (const [tmdbId, entry] of this.tmdbFranchiseCache) {
+  //     if (entry.expires <= now) {
+  //       this.tmdbFranchiseCache.delete(tmdbId);
+  //       cleaned++;
+  //     }
+  //   }
+  //   return cleaned;
+  // }
 }
 
 // Export singleton instance
